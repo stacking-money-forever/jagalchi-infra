@@ -1,0 +1,278 @@
+name: jagalchi-personal
+
+services:
+  api:
+    image: "${API_IMAGE:?API_IMAGE is required}"
+    # Migrations run in the one-shot api-migrate service below.
+    command: ["node", "dist/main.js"]
+    environment:
+      NODE_ENV: "production"
+      PORT: "8080"
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL is required}"
+      DATABASE_SSL: "${DATABASE_SSL:?DATABASE_SSL is required}"
+      DATABASE_SSL_CA: "${DATABASE_SSL_CA:?DATABASE_SSL_CA is required}"
+      DATABASE_SYNCHRONIZE: "false"
+      DATABASE_POOL_MAX: "5"
+      DATABASE_CONNECTION_TIMEOUT_MS: "5000"
+      DATABASE_QUERY_TIMEOUT_MS: "10000"
+      DATABASE_STATEMENT_TIMEOUT_MS: "10000"
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:?TRUST_PROXY_HOPS is required}"
+      JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required}"
+      AI_AUTH_JWT_SECRET: "${AI_AUTH_JWT_SECRET:?AI_AUTH_JWT_SECRET is required}"
+      VERIFICATION_CODE_SECRET: "${VERIFICATION_CODE_SECRET:?VERIFICATION_CODE_SECRET is required}"
+      RATE_LIMIT_HASH_SECRET: "${RATE_LIMIT_HASH_SECRET:?RATE_LIMIT_HASH_SECRET is required}"
+      AI_FEATURES_ENABLED: "true"
+      UPLOADS_ENABLED: "true"
+      EVIDENCE_EXECUTION_ENABLED: "true"
+      PUBLIC_PROOF_PROFILE_ENABLED: "true"
+      OAUTH_ENABLED: "true"
+      OAUTH_APPLE_ENABLED: "false"
+      OAUTH_GOOGLE_CLIENT_ID: "${OAUTH_GOOGLE_CLIENT_ID:?OAUTH_GOOGLE_CLIENT_ID is required}"
+      OAUTH_GOOGLE_CLIENT_SECRET: "${OAUTH_GOOGLE_CLIENT_SECRET:?OAUTH_GOOGLE_CLIENT_SECRET is required}"
+      OAUTH_GITHUB_CLIENT_ID: "${OAUTH_GITHUB_CLIENT_ID:?OAUTH_GITHUB_CLIENT_ID is required}"
+      OAUTH_GITHUB_CLIENT_SECRET: "${OAUTH_GITHUB_CLIENT_SECRET:?OAUTH_GITHUB_CLIENT_SECRET is required}"
+      IAP_ENABLED: "false"
+      EMAIL_ENABLED: "true"
+      AI_SERVICE_URL: "http://ai:8000"
+      AI_TIMEOUT_MS: "45000"
+      CORS_ORIGINS: "${CORS_ORIGINS:?CORS_ORIGINS is required}"
+      PUBLIC_API_URL: "${PUBLIC_API_URL:?PUBLIC_API_URL is required}"
+      WEB_APP_URL: "${WEB_APP_URL:?WEB_APP_URL is required}"
+      GITHUB_APP_ID: "${GITHUB_APP_ID:?GITHUB_APP_ID is required}"
+      GITHUB_APP_PRIVATE_KEY: "${GITHUB_APP_PRIVATE_KEY:?GITHUB_APP_PRIVATE_KEY is required}"
+      GITHUB_APP_WEBHOOK_SECRET: "${GITHUB_APP_WEBHOOK_SECRET:?GITHUB_APP_WEBHOOK_SECRET is required}"
+      GITHUB_APP_SLUG: "${GITHUB_APP_SLUG:?GITHUB_APP_SLUG is required}"
+      GITHUB_APP_SETUP_URL: "https://github.com/apps/${GITHUB_APP_SLUG:?GITHUB_APP_SLUG is required}/installations/new"
+      RESEND_API_KEY: "${RESEND_API_KEY:?RESEND_API_KEY is required}"
+      EMAIL_FROM: "${EMAIL_FROM:?EMAIL_FROM is required}"
+      OBJECT_STORAGE_BUCKET: "${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}"
+      OBJECT_STORAGE_REGION: "${OBJECT_STORAGE_REGION:?OBJECT_STORAGE_REGION is required}"
+      OBJECT_STORAGE_ENDPOINT: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}"
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+      OBJECT_STORAGE_ACCESS_KEY_ID: "${OBJECT_STORAGE_ACCESS_KEY_ID:?OBJECT_STORAGE_ACCESS_KEY_ID is required}"
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: "${OBJECT_STORAGE_SECRET_ACCESS_KEY:?OBJECT_STORAGE_SECRET_ACCESS_KEY is required}"
+      OBJECT_STORAGE_PUBLIC_BASE_URL: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}/${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}/"
+    expose:
+      - "8080"
+    depends_on:
+      ai:
+        condition: service_healthy
+      api-migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  api-migrate:
+    image: "${API_IMAGE:?API_IMAGE is required}"
+    command: ["node", "dist/database/run-migrations.js"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL is required}"
+      DATABASE_SSL: "${DATABASE_SSL:?DATABASE_SSL is required}"
+      DATABASE_SSL_CA: "${DATABASE_SSL_CA:?DATABASE_SSL_CA is required}"
+      DATABASE_CONNECTION_TIMEOUT_MS: "5000"
+      DATABASE_QUERY_TIMEOUT_MS: "10000"
+      DATABASE_STATEMENT_TIMEOUT_MS: "10000"
+    restart: "no"
+
+  api-db:
+    image: postgres:17-alpine
+    profiles: ["local-api-db"]
+    environment:
+      POSTGRES_DB: "jagalchi_api"
+      POSTGRES_USER: "jagalchi_api"
+      POSTGRES_PASSWORD: "${API_POSTGRES_PASSWORD:-}"
+    volumes:
+      - api-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jagalchi_api -d jagalchi_api"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  ai:
+    image: "${AI_IMAGE:?AI_IMAGE is required}"
+    environment:
+      DJANGO_SETTINGS_MODULE: "jagalchi_ai.settings"
+      DJANGO_DEBUG: "false"
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY is required}"
+      DJANGO_ALLOWED_HOSTS: '["ai","localhost","127.0.0.1"]'
+      AI_AUTH_ENABLED: "true"
+      AI_AUTH_JWT_SECRET: "${AI_AUTH_JWT_SECRET:?AI_AUTH_JWT_SECRET is required}"
+      AI_DISABLE_EXTERNAL: "false"
+      AI_DISABLE_LLM: "false"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}"
+      DEEPSEEK_MODEL: "${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+      DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+      DEEPSEEK_TIMEOUT_SECONDS: "${DEEPSEEK_TIMEOUT_SECONDS:-45}"
+      DEEPSEEK_MAX_RETRIES: "${DEEPSEEK_MAX_RETRIES:-3}"
+      DEEPSEEK_THINKING_ENABLED: "${DEEPSEEK_THINKING_ENABLED:-false}"
+      TAVILY_API_KEY: "${TAVILY_API_KEY:?TAVILY_API_KEY is required}"
+      EXA_API_KEY: "${EXA_API_KEY:?EXA_API_KEY is required}"
+      DATABASE_ENGINE: "django.db.backends.postgresql"
+      DATABASE_NAME: "jagalchi_ai"
+      DATABASE_USER: "jagalchi_ai"
+      DATABASE_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      DATABASE_HOST: "ai-db"
+      DATABASE_PORT: "5432"
+      DATABASE_CONN_MAX_AGE: "60"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        python manage.py migrate --noinput &&
+        exec gunicorn --bind 0.0.0.0:8000 --workers 4
+        --worker-class uvicorn.workers.UvicornWorker --timeout 120
+        --graceful-timeout 30 --keep-alive 5 --max-requests 1000
+        --max-requests-jitter 50 --access-logfile - --error-logfile -
+        --capture-output --enable-stdio-inheritance jagalchi_ai.asgi:application
+    expose:
+      - "8000"
+    depends_on:
+      ai-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/ai/health/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  ai-db:
+    image: postgres:17-alpine
+    command:
+      - postgres
+      - -c
+      - max_connections=50
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+    environment:
+      POSTGRES_DB: "jagalchi_ai"
+      POSTGRES_USER: "jagalchi_ai"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+    volumes:
+      - ai-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jagalchi_ai -d jagalchi_ai"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: "${OBJECT_STORAGE_ACCESS_KEY_ID:?OBJECT_STORAGE_ACCESS_KEY_ID is required}"
+      MINIO_ROOT_PASSWORD: "${OBJECT_STORAGE_SECRET_ACCESS_KEY:?OBJECT_STORAGE_SECRET_ACCESS_KEY is required}"
+      MINIO_SERVER_URL: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}"
+    expose:
+      - "9000"
+      - "9001"
+    volumes:
+      - object-storage:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$$OBJECT_STORAGE_BUCKET" &&
+        mc anonymous set download "local/$$OBJECT_STORAGE_BUCKET/public/profiles/"
+    environment:
+      MINIO_ROOT_USER: "${OBJECT_STORAGE_ACCESS_KEY_ID:?OBJECT_STORAGE_ACCESS_KEY_ID is required}"
+      MINIO_ROOT_PASSWORD: "${OBJECT_STORAGE_SECRET_ACCESS_KEY:?OBJECT_STORAGE_SECRET_ACCESS_KEY is required}"
+      OBJECT_STORAGE_BUCKET: "${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}"
+
+  caddy:
+    image: caddy:2.10.0-alpine
+    profiles: ["direct-ingress"]
+    environment:
+      API_DOMAIN: "${API_DOMAIN:?API_DOMAIN is required}"
+      UPLOADS_DOMAIN: "${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}"
+      CADDY_EMAIL: "${CADDY_EMAIL:-}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3
+    profiles: ["cloudflare-tunnel"]
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --metrics
+      - 0.0.0.0:2000
+      - run
+      - --token-file
+      - /run/secrets/cloudflare_tunnel_token
+    secrets:
+      - cloudflare_tunnel_token
+    depends_on:
+      api:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  api-postgres:
+    name: jagalchi-personal-api-postgres
+  ai-postgres:
+    name: jagalchi-personal-ai-postgres
+  object-storage:
+    name: jagalchi-personal-object-storage
+  caddy-data:
+    name: jagalchi-personal-caddy-data
+  caddy-config:
+    name: jagalchi-personal-caddy-config
+
+secrets:
+  cloudflare_tunnel_token:
+    environment: CLOUDFLARE_TUNNEL_TOKEN

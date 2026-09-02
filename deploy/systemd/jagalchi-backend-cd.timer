@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for a CI-approved Jagalchi backend release
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=jagalchi-backend-cd.service
+
+[Install]
+WantedBy=timers.target

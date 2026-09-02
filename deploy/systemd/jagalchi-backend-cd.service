@@ -1,0 +1,26 @@
+[Unit]
+Description=Jagalchi backend CD poll and deploy
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+SupplementaryGroups=docker
+Environment=HOME=/srv/jagalchi-cd/home
+Environment=XDG_CONFIG_HOME=/srv/jagalchi-cd/config
+ExecStart=/usr/local/libexec/jagalchi-backend-cd/cd-poll.sh
+TimeoutStartSec=45min
+UMask=0077
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/jagalchi-cd /var/backups/jagalchi
+ReadOnlyPaths=/etc/jagalchi /usr/local/libexec/jagalchi-backend-cd
+
+[Install]
+WantedBy=multi-user.target
