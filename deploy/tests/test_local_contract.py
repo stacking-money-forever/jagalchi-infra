@@ -102,12 +102,23 @@ class LocalStackContractTest(unittest.TestCase):
                     path = source / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("fixture\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(source), "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-qm", "fixture"],
+                    check=True, capture_output=True, text=True,
+                )
 
             openapi_path = api_source / "contracts/openapi.json"
             openapi_path.parent.mkdir(parents=True, exist_ok=True)
             openapi_path.write_text("{}\n", encoding="utf-8")
             lock["python"] = f"{os.sys.version_info.major}.{os.sys.version_info.minor}"
             lock["apiContractSha256"] = __import__("hashlib").sha256(openapi_path.read_bytes()).hexdigest()
+            # fixture 저장소 HEAD를 lock revisions에 기록해 revision 대조가 통과하도록
+            lock["revisions"] = {
+                "platform": subprocess.run(["git", "-C", str(platform_source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip(),
+                "api": subprocess.run(["git", "-C", str(api_source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip(),
+                "ai": subprocess.run(["git", "-C", str(ai_source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip(),
+            }
             lock_path = temp_dir / "lock.json"
             lock_path.write_text(json.dumps(lock), encoding="utf-8")
 
@@ -125,8 +136,8 @@ class LocalStackContractTest(unittest.TestCase):
                 "AI_DISABLE_EXTERNAL": "true",
                 "AI_DISABLE_LLM": "true",
                 "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
-                "DEEPSEEK_EXTRACTION_MODEL": "deepseek-v4-flash",
-                "DEEPSEEK_PLANNING_MODEL": "deepseek-v4-pro",
+                "DEEPSEEK_EXTRACTION_MODEL": lock["providers"]["extractionModel"],
+                "DEEPSEEK_PLANNING_MODEL": lock["providers"]["planningModel"],
             }
             subprocess.run(command, check=True, capture_output=True, text=True, env=provider_env)
 
@@ -136,6 +147,7 @@ class LocalStackContractTest(unittest.TestCase):
                 ("composeFile", "missing.yml"),
                 ("loopbackPorts", [1]),
                 ("forbiddenSourceFragments", [str(api_source)]),
+                ("revisions", {**lock["revisions"], "api": "0" * 40}),
             ):
                 changed = dict(lock)
                 changed[field] = bad_value

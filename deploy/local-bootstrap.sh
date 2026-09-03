@@ -27,6 +27,7 @@ set +a
 clone_if_missing() {
   local destination="$1"
   local repository_url="$2"
+  local source_key="$3"
   if [[ -e "$destination" ]]; then
     return
   fi
@@ -36,11 +37,15 @@ clone_if_missing() {
   fi
   mkdir -p "$(dirname "$destination")"
   git clone --filter=blob:none "$repository_url" "$destination"
+  local expected="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['revisions'][sys.argv[2]])" "$lock_file" "$source_key")"
+  git -C "$destination" checkout --detach "$expected"
+  git -C "$destination" submodule update --init --recursive 2>/dev/null || true
 }
 
-clone_if_missing "$API_SOURCE_DIR" https://github.com/stacking-money-forever/jagalchi-api.git
-clone_if_missing "$AI_SOURCE_DIR" https://github.com/stacking-money-forever/jagalchi-ai.git
-clone_if_missing "$PLATFORM_SOURCE_DIR" https://github.com/stacking-money-forever/jagalchi-platform.git
+# 소스 디렉터리 키 매핑 (local.env의 변수명 -> lock revisions 키)
+clone_if_missing "$PLATFORM_SOURCE_DIR" https://github.com/stacking-money-forever/jagalchi-platform.git platform
+clone_if_missing "$API_SOURCE_DIR" https://github.com/stacking-money-forever/jagalchi-api.git api
+clone_if_missing "$AI_SOURCE_DIR" https://github.com/stacking-money-forever/jagalchi-ai.git ai
 
 "$repo_root/deploy/local-doctor.sh" "$env_file"
 

@@ -43,6 +43,17 @@ def validate_source(name: str, source_dir: Path, contract: dict[str, object]) ->
             fail(f"missing required {name} source file: {relative}")
 
 
+def git_head(source_dir: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise AssertionError(f"cannot read git HEAD from {source_dir}") from exc
+    return result.stdout.strip()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lock", required=True, type=Path)
@@ -84,6 +95,22 @@ def main() -> None:
         if not isinstance(contract, dict):
             fail(f"missing canonical source contract: {key}")
         validate_source(key, path, contract)
+
+    revisions = lock.get("revisions")
+    if isinstance(revisions, dict):
+        dev_head = os.environ.get("JAGALCHI_DEV_HEAD", "") == "true"
+        for key, path in (("platform", args.platform_source), ("api", args.api_source), ("ai", args.ai_source)):
+            expected = revisions.get(key)
+            if not isinstance(expected, str) or len(expected) != 40:
+                fail(f"missing locked revision for {key}")
+            if dev_head:
+                continue
+            actual = git_head(path)
+            if actual != expected:
+                fail(
+                    f"unpinned {key} checkout: expected {expected}, found {actual} "
+                    "(rerun with JAGALCHI_DEV_HEAD=true to allow development head)"
+                )
 
     openapi_path = args.api_source / "contracts" / "openapi.json"
     if not openapi_path.is_file():

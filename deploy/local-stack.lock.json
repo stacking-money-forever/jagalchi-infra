@@ -89,5 +89,11 @@
  "forbiddenSourceFragments": [
   "jagalchi-platform/services/api",
   "jagalchi-platform/services/ai"
- ]
+ ],
+ "revisions": {
+  "platform": "01a323d85eede34555f559083dd0faab423519ae",
+  "api": "6d9fa7f107ed6bf160bf277956bc9a5356f14fc5",
+  "ai": "6e618a350d4b1ab532da76a1b0c3e418c0c4c56b",
+  "infra": "c2cc186ae553d97cbca7aeeecf2582a015dab2d6"
+ }
 }
