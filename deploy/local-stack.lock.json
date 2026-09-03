@@ -1,0 +1,93 @@
+{
+ "schemaVersion": 1,
+ "project": "jagalchi-v1-local",
+ "nodeMajor": 24,
+ "pnpm": "10.33.2",
+ "python": "3.11",
+ "apiContractSha256": "b629ae9d1afbe06505c4a1f841d6f382046c944ae910946771638a1da433a92e",
+ "composeFile": "compose.local.yml",
+ "canonicalSources": {
+  "platform": {
+   "repository": "stacking-money-forever/jagalchi-platform",
+   "requiredFiles": [
+    "package.json",
+    "pnpm-lock.yaml",
+    "apps/web/package.json"
+   ]
+  },
+  "api": {
+   "repository": "stacking-money-forever/jagalchi-api",
+   "requiredFiles": [
+    "package.json",
+    "pnpm-lock.yaml",
+    "Dockerfile"
+   ]
+  },
+  "ai": {
+   "repository": "stacking-money-forever/jagalchi-ai",
+   "requiredFiles": [
+    "manage.py",
+    "requirements.runtime.txt",
+    "Dockerfile"
+   ]
+  }
+ },
+ "providers": {
+  "deepseekBaseUrl": "https://api.deepseek.com",
+  "extractionModel": "deepseek-v4-flash",
+  "planningModel": "deepseek-v4-flash",
+  "modes": {
+   "ci": [
+    "fixture",
+    "fixture",
+    "fixture",
+    "fake",
+    "true",
+    "true"
+   ],
+   "ci-real-source": [
+    "live",
+    "fixture",
+    "fixture",
+    "fake",
+    "true",
+    "true"
+   ],
+   "local": [
+    "fixture",
+    "fixture",
+    "deepseek",
+    "deepseek",
+    "false",
+    "false"
+   ],
+   "local-real-source": [
+    "live",
+    "fixture",
+    "deepseek",
+    "deepseek",
+    "false",
+    "false"
+   ],
+   "local-real": [
+    "live",
+    "github",
+    "deepseek",
+    "deepseek",
+    "false",
+    "false"
+   ]
+  }
+ },
+ "loopbackPorts": [
+  8080,
+  9000,
+  9001,
+  55432,
+  55433
+ ],
+ "forbiddenSourceFragments": [
+  "jagalchi-platform/services/api",
+  "jagalchi-platform/services/ai"
+ ]
+}

@@ -1,0 +1,222 @@
+name: jagalchi-v1-local
+
+x-api-env: &api-env
+  JAGALCHI_LOCAL_MODE: ${JAGALCHI_LOCAL_MODE:-local}
+  NODE_ENV: development
+  PORT: "8080"
+  DATABASE_URL: postgresql://jagalchi_api:${API_POSTGRES_PASSWORD}@api-db:5432/jagalchi_api
+  DATABASE_SSL: "false"
+  DATABASE_SYNCHRONIZE: "false"
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+  AI_AUTH_JWT_SECRET: ${AI_AUTH_JWT_SECRET}
+  VERIFICATION_CODE_SECRET: ${VERIFICATION_CODE_SECRET}
+  RATE_LIMIT_HASH_SECRET: ${RATE_LIMIT_HASH_SECRET}
+  PROJECT_RUNS_ENABLED: "true"
+  AI_FEATURES_ENABLED: "true"
+  AI_SERVICE_URL: http://ai:8000
+  AI_TIMEOUT_MS: "65000"
+  WORKFLOW_LEASE_MS: ${WORKFLOW_LEASE_MS:-120000}
+  WORKFLOW_HEARTBEAT_MS: ${WORKFLOW_HEARTBEAT_MS:-5000}
+  WORKFLOW_HEALTH_MAX_AGE_MS: ${WORKFLOW_HEALTH_MAX_AGE_MS:-15000}
+  WORKFLOW_POLL_MS: ${WORKFLOW_POLL_MS:-1000}
+  JOB_SOURCE_PROVIDER: ${JOB_SOURCE_PROVIDER:-fixture}
+  GITHUB_PROVIDER: ${GITHUB_PROVIDER:-fixture}
+  AI_PROVIDER: ${AI_PROVIDER:-deepseek}
+  OAUTH_ENABLED: "false"
+  OAUTH_APPLE_ENABLED: "false"
+  IAP_ENABLED: "false"
+  EMAIL_ENABLED: "false"
+  UPLOADS_ENABLED: "true"
+  EVIDENCE_EXECUTION_ENABLED: "true"
+  PUBLIC_PROOF_PROFILE_ENABLED: "true"
+  PUBLIC_API_URL: http://127.0.0.1:8080
+  WEB_APP_URL: http://127.0.0.1:3000
+  CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+  TRUST_PROXY_HOPS: "0"
+  OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-jagalchi-local}
+  OBJECT_STORAGE_REGION: us-east-1
+  OBJECT_STORAGE_ENDPOINT: http://minio:9000
+  OBJECT_STORAGE_PRESIGN_ENDPOINT: ${OBJECT_STORAGE_PRESIGN_ENDPOINT:-http://127.0.0.1:9000}
+  OBJECT_STORAGE_PUBLIC_BASE_URL: http://127.0.0.1:9000/${OBJECT_STORAGE_BUCKET:-jagalchi-local}/
+  OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+  OBJECT_STORAGE_ACCESS_KEY_ID: ${OBJECT_STORAGE_ACCESS_KEY_ID}
+  OBJECT_STORAGE_SECRET_ACCESS_KEY: ${OBJECT_STORAGE_SECRET_ACCESS_KEY}
+
+x-ai-env: &ai-env
+  DEPLOYMENT_ENV: development
+  DJANGO_SETTINGS_MODULE: jagalchi_ai.settings
+  DJANGO_DEBUG: "false"
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+  DJANGO_ALLOWED_HOSTS: '["ai","localhost","127.0.0.1"]'
+  DATABASE_ENGINE: django.db.backends.postgresql
+  DATABASE_NAME: jagalchi_ai
+  DATABASE_USER: jagalchi_ai
+  DATABASE_PASSWORD: ${AI_POSTGRES_PASSWORD}
+  DATABASE_HOST: ai-db
+  DATABASE_PORT: "5432"
+  AI_AUTH_ENABLED: "true"
+  AI_AUTH_JWT_SECRET: ${AI_AUTH_JWT_SECRET}
+  AI_DISABLE_EXTERNAL: ${AI_DISABLE_EXTERNAL:-false}
+  AI_DISABLE_LLM: ${AI_DISABLE_LLM:-false}
+  AI_V1_PROVIDER: ${AI_V1_PROVIDER:-deepseek}
+  AI_V1_PROMPT_VERSION: "2026-09-03.4"
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+  DEEPSEEK_EXTRACTION_MODEL: ${DEEPSEEK_EXTRACTION_MODEL:-deepseek-v4-flash}
+  DEEPSEEK_PLANNING_MODEL: ${DEEPSEEK_PLANNING_MODEL:-deepseek-v4-pro}
+  DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+  DEEPSEEK_TIMEOUT_SECONDS: "20"
+  DEEPSEEK_MAX_RETRIES: "1"
+  AI_V1_REQUEST_TIMEOUT_SECONDS: "50"
+  AI_UPSTREAM_TIMEOUT_SECONDS: "65"
+  AI_GUNICORN_TIMEOUT_SECONDS: "75"
+  AI_OPERATION_LEASE_SECONDS: "120"
+  AI_OPERATION_HEARTBEAT_SECONDS: "5"
+
+services:
+  api-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: jagalchi_api
+      POSTGRES_USER: jagalchi_api
+      POSTGRES_PASSWORD: ${API_POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:55432:5432"]
+    volumes: [api-postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jagalchi_api -d jagalchi_api"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  ai-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: jagalchi_ai
+      POSTGRES_USER: jagalchi_ai
+      POSTGRES_PASSWORD: ${AI_POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:55433:5432"]
+    volumes: [ai-postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jagalchi_ai -d jagalchi_ai"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${OBJECT_STORAGE_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${OBJECT_STORAGE_SECRET_ACCESS_KEY}
+      MINIO_API_CORS_ALLOW_ORIGIN: http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:3100,http://localhost:3100
+      MINIO_API_CORS_ALLOW_CREDENTIALS_WITH_WILDCARD: "off"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes: [object-storage:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing "local/$${OBJECT_STORAGE_BUCKET}" &&
+        mc anonymous set download "local/$${OBJECT_STORAGE_BUCKET}/public/profiles/"
+    environment:
+      MINIO_ROOT_USER: ${OBJECT_STORAGE_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${OBJECT_STORAGE_SECRET_ACCESS_KEY}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-jagalchi-local}
+
+  api-migrate:
+    build:
+      context: ${API_SOURCE_DIR}
+    command: ["node", "dist/database/run-migrations.js"]
+    environment:
+      <<: *api-env
+      AI_TIMEOUT_MS: "65000"
+    depends_on:
+      api-db: { condition: service_healthy }
+    restart: "no"
+
+  ai-migrate:
+    build:
+      context: ${AI_SOURCE_DIR}
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    environment: *ai-env
+    depends_on:
+      ai-db: { condition: service_healthy }
+    restart: "no"
+
+  ai:
+    build:
+      context: ${AI_SOURCE_DIR}
+    dns: [8.8.8.8, 1.1.1.1]
+    extra_hosts:
+      # 로컬 DNS 오염(Cloudflare WARP가 부산교육청 OfficeGuard로 211.182.225.70 반환) 우회:
+      # 진짜 CloudFront 주소를 고정. 단, CloudFront IP는 변경될 수 있으므로 임시 로컬 편의책.
+      - "api.deepseek.com:3.173.21.63"
+    environment: *ai-env
+    expose: ["8000"]
+    depends_on:
+      ai-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/ai/health/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ${API_SOURCE_DIR}
+    command: ["node", "dist/main.js"]
+    environment: *api-env
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      api-migrate: { condition: service_completed_successfully }
+      ai: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  workflow-worker:
+    build:
+      context: ${API_SOURCE_DIR}
+    command: ["node", "dist/worker.js"]
+    environment: *api-env
+    depends_on:
+      api-migrate: { condition: service_completed_successfully }
+      ai: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "dist/workflow/health-check.js"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  api-seed:
+    profiles: ["tools"]
+    build:
+      context: ${API_SOURCE_DIR}
+    command: ["node", "dist/database/dev-seed.js", "--json"]
+    environment:
+      <<: *api-env
+      LOCAL_SEED_EMAIL: ${LOCAL_SEED_EMAIL}
+      LOCAL_SEED_PASSWORD: ${LOCAL_SEED_PASSWORD}
+    depends_on:
+      api-migrate: { condition: service_completed_successfully }
+    restart: "no"
+
+volumes:
+  api-postgres:
+  ai-postgres:
+  object-storage:
