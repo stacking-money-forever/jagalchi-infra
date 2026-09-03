@@ -1,12 +1,13 @@
 # Personal server deployment
 
 The current release target is the Vercel-hosted web application backed by a
-single personal-server VM. The VM runs the Nest API, Django AI service, AI
+single personal-server VM. The VM runs the Nest API, a separate Nest workflow
+worker, Django AI service, AI
 PostgreSQL, MinIO, and an outbound-only Cloudflare Tunnel connector. The Nest
 API uses Supabase PostgreSQL with verified TLS. Apple,
 mobile, and in-app purchase credentials are not part of this web release.
 
-This runbook assumes the checkout is `/srv/jagalchi-platform` on the Ubuntu VM
+This runbook assumes the checkout is `/srv/jagalchi-infra` on the Ubuntu VM
 and that the `deploy` operator can use Docker Compose. Run root-only backup and
 environment-file operations with `sudo`; do not run
 `deploy/bootstrap-ubuntu.sh` on an existing host. Before deployment, record the
@@ -59,6 +60,7 @@ The web-release feature boundary must remain:
 OAUTH_ENABLED=true
 OAUTH_APPLE_ENABLED=false
 IAP_ENABLED=false
+PROJECT_RUNS_ENABLED=false
 EMAIL_ENABLED=true
 AI_DISABLE_EXTERNAL=false
 AI_DISABLE_LLM=false
@@ -83,6 +85,13 @@ DeepSeek uses the official OpenAI-compatible origin
 default for the application's frequent JSON generation calls. Set
 `DEEPSEEK_MODEL=deepseek-v4-pro` or enable thinking only after measuring the
 latency and cost impact on a target-shaped request.
+
+The workflow worker may wait up to 65 seconds for one internal AI request.
+Django's v1 request budget is 50 seconds and Gunicorn allows 75 seconds, while
+each DeepSeek attempt is bounded to 20 seconds with one retry. The operation
+lease is 120 seconds. The worker must renew its database
+lease independently while the request is in flight. Do not increase one timeout
+without preserving this ordering and exercising lease-recovery tests.
 
 ## Preflight, deploy, and verify
 
@@ -125,6 +134,12 @@ docker compose --env-file /etc/jagalchi/jagalchi-production.env -f compose.produ
 docker compose --env-file /etc/jagalchi/jagalchi-production.env -f compose.production.yml --profile cloudflare-tunnel logs --tail=200 api ai cloudflared
 ./deploy/smoke.sh /etc/jagalchi/jagalchi-production.env
 ```
+
+The API and workflow worker use the same reviewed image but separate commands.
+Both API and AI migrations run as one-shot services before either long-running
+process starts. Django AI has no published host port and uses the external
+`uvicorn-worker` Gunicorn class rather than the deprecated module bundled in
+Uvicorn.
 
 After server smoke passes, set the Vercel Production values from the web section
 of `deploy/personal-server.env.example`, then create a new production deployment;
@@ -194,7 +209,7 @@ it does not run preflight, build images, mutate databases or containers, or
 write deployed/failed state. Confirm production readiness separately:
 
 ```bash
-cd /srv/jagalchi-platform
+cd /srv/jagalchi-infra
 ./deploy/preflight.sh /etc/jagalchi/jagalchi-production.env
 ```
 

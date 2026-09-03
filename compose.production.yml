@@ -22,8 +22,12 @@ services:
       VERIFICATION_CODE_SECRET: "${VERIFICATION_CODE_SECRET:?VERIFICATION_CODE_SECRET is required}"
       RATE_LIMIT_HASH_SECRET: "${RATE_LIMIT_HASH_SECRET:?RATE_LIMIT_HASH_SECRET is required}"
       AI_FEATURES_ENABLED: "true"
+      AI_PROVIDER: "deepseek"
       UPLOADS_ENABLED: "true"
       EVIDENCE_EXECUTION_ENABLED: "true"
+      GITHUB_PROVIDER: "github"
+      JOB_SOURCE_PROVIDER: "live"
+      PROJECT_RUNS_ENABLED: "${PROJECT_RUNS_ENABLED:-false}"
       PUBLIC_PROOF_PROFILE_ENABLED: "true"
       OAUTH_ENABLED: "true"
       OAUTH_APPLE_ENABLED: "false"
@@ -35,6 +39,9 @@ services:
       EMAIL_ENABLED: "true"
       AI_SERVICE_URL: "http://ai:8000"
       AI_TIMEOUT_MS: "45000"
+      WORKFLOW_LEASE_MS: "${WORKFLOW_LEASE_MS:-120000}"
+      WORKFLOW_HEARTBEAT_MS: "${WORKFLOW_HEARTBEAT_MS:-30000}"
+      WORKFLOW_POLL_MS: "${WORKFLOW_POLL_MS:-1000}"
       CORS_ORIGINS: "${CORS_ORIGINS:?CORS_ORIGINS is required}"
       PUBLIC_API_URL: "${PUBLIC_API_URL:?PUBLIC_API_URL is required}"
       WEB_APP_URL: "${WEB_APP_URL:?WEB_APP_URL is required}"
@@ -48,6 +55,7 @@ services:
       OBJECT_STORAGE_BUCKET: "${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}"
       OBJECT_STORAGE_REGION: "${OBJECT_STORAGE_REGION:?OBJECT_STORAGE_REGION is required}"
       OBJECT_STORAGE_ENDPOINT: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}"
+      OBJECT_STORAGE_PRESIGN_ENDPOINT: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}"
       OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
       OBJECT_STORAGE_ACCESS_KEY_ID: "${OBJECT_STORAGE_ACCESS_KEY_ID:?OBJECT_STORAGE_ACCESS_KEY_ID is required}"
       OBJECT_STORAGE_SECRET_ACCESS_KEY: "${OBJECT_STORAGE_SECRET_ACCESS_KEY:?OBJECT_STORAGE_SECRET_ACCESS_KEY is required}"
@@ -85,7 +93,80 @@ services:
       DATABASE_CONNECTION_TIMEOUT_MS: "5000"
       DATABASE_QUERY_TIMEOUT_MS: "10000"
       DATABASE_STATEMENT_TIMEOUT_MS: "10000"
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:?TRUST_PROXY_HOPS is required}"
     restart: "no"
+
+  workflow-worker:
+    image: "${API_IMAGE:?API_IMAGE is required}"
+    command: ["node", "dist/worker.js"]
+    environment:
+      NODE_ENV: "production"
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL is required}"
+      DATABASE_SSL: "${DATABASE_SSL:?DATABASE_SSL is required}"
+      DATABASE_SSL_CA: "${DATABASE_SSL_CA:?DATABASE_SSL_CA is required}"
+      DATABASE_SYNCHRONIZE: "false"
+      DATABASE_POOL_MAX: "5"
+      DATABASE_CONNECTION_TIMEOUT_MS: "5000"
+      DATABASE_QUERY_TIMEOUT_MS: "10000"
+      DATABASE_STATEMENT_TIMEOUT_MS: "10000"
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:?TRUST_PROXY_HOPS is required}"
+      JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required}"
+      AI_AUTH_JWT_SECRET: "${AI_AUTH_JWT_SECRET:?AI_AUTH_JWT_SECRET is required}"
+      VERIFICATION_CODE_SECRET: "${VERIFICATION_CODE_SECRET:?VERIFICATION_CODE_SECRET is required}"
+      RATE_LIMIT_HASH_SECRET: "${RATE_LIMIT_HASH_SECRET:?RATE_LIMIT_HASH_SECRET is required}"
+      PROJECT_RUNS_ENABLED: "${PROJECT_RUNS_ENABLED:-false}"
+      AI_FEATURES_ENABLED: "true"
+      AI_PROVIDER: "deepseek"
+      UPLOADS_ENABLED: "true"
+      EVIDENCE_EXECUTION_ENABLED: "true"
+      GITHUB_PROVIDER: "github"
+      JOB_SOURCE_PROVIDER: "live"
+      PUBLIC_PROOF_PROFILE_ENABLED: "true"
+      OAUTH_ENABLED: "true"
+      OAUTH_APPLE_ENABLED: "false"
+      IAP_ENABLED: "false"
+      EMAIL_ENABLED: "true"
+      AI_SERVICE_URL: "http://ai:8000"
+      AI_TIMEOUT_MS: "65000"
+      WORKFLOW_LEASE_MS: "${WORKFLOW_LEASE_MS:-120000}"
+      WORKFLOW_HEARTBEAT_MS: "${WORKFLOW_HEARTBEAT_MS:-30000}"
+      WORKFLOW_POLL_MS: "${WORKFLOW_POLL_MS:-1000}"
+      CORS_ORIGINS: "${CORS_ORIGINS:?CORS_ORIGINS is required}"
+      PUBLIC_API_URL: "${PUBLIC_API_URL:?PUBLIC_API_URL is required}"
+      WEB_APP_URL: "${WEB_APP_URL:?WEB_APP_URL is required}"
+      OAUTH_GOOGLE_CLIENT_ID: "${OAUTH_GOOGLE_CLIENT_ID:?OAUTH_GOOGLE_CLIENT_ID is required}"
+      OAUTH_GOOGLE_CLIENT_SECRET: "${OAUTH_GOOGLE_CLIENT_SECRET:?OAUTH_GOOGLE_CLIENT_SECRET is required}"
+      OAUTH_GITHUB_CLIENT_ID: "${OAUTH_GITHUB_CLIENT_ID:?OAUTH_GITHUB_CLIENT_ID is required}"
+      OAUTH_GITHUB_CLIENT_SECRET: "${OAUTH_GITHUB_CLIENT_SECRET:?OAUTH_GITHUB_CLIENT_SECRET is required}"
+      GITHUB_APP_ID: "${GITHUB_APP_ID:?GITHUB_APP_ID is required}"
+      GITHUB_APP_PRIVATE_KEY: "${GITHUB_APP_PRIVATE_KEY:?GITHUB_APP_PRIVATE_KEY is required}"
+      GITHUB_APP_WEBHOOK_SECRET: "${GITHUB_APP_WEBHOOK_SECRET:?GITHUB_APP_WEBHOOK_SECRET is required}"
+      GITHUB_APP_SLUG: "${GITHUB_APP_SLUG:?GITHUB_APP_SLUG is required}"
+      GITHUB_APP_SETUP_URL: "https://github.com/apps/${GITHUB_APP_SLUG:?GITHUB_APP_SLUG is required}/installations/new"
+      RESEND_API_KEY: "${RESEND_API_KEY:?RESEND_API_KEY is required}"
+      EMAIL_FROM: "${EMAIL_FROM:?EMAIL_FROM is required}"
+      OBJECT_STORAGE_BUCKET: "${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}"
+      OBJECT_STORAGE_REGION: "${OBJECT_STORAGE_REGION:?OBJECT_STORAGE_REGION is required}"
+      OBJECT_STORAGE_ENDPOINT: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}"
+      OBJECT_STORAGE_PRESIGN_ENDPOINT: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}"
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+      OBJECT_STORAGE_ACCESS_KEY_ID: "${OBJECT_STORAGE_ACCESS_KEY_ID:?OBJECT_STORAGE_ACCESS_KEY_ID is required}"
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: "${OBJECT_STORAGE_SECRET_ACCESS_KEY:?OBJECT_STORAGE_SECRET_ACCESS_KEY is required}"
+      OBJECT_STORAGE_PUBLIC_BASE_URL: "https://${UPLOADS_DOMAIN:?UPLOADS_DOMAIN is required}/${OBJECT_STORAGE_BUCKET:?OBJECT_STORAGE_BUCKET is required}/"
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+      ai:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "dist/workflow/health-check.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
 
   api-db:
     image: postgres:17-alpine
@@ -103,9 +184,49 @@ services:
       retries: 10
     restart: unless-stopped
 
+  ai-migrate:
+    image: "${AI_IMAGE:?AI_IMAGE is required}"
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    environment:
+      DEPLOYMENT_ENV: "production"
+      DJANGO_SETTINGS_MODULE: "jagalchi_ai.settings"
+      DJANGO_DEBUG: "false"
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY is required}"
+      DJANGO_ALLOWED_HOSTS: '["ai","localhost","127.0.0.1"]'
+      DATABASE_ENGINE: "django.db.backends.postgresql"
+      DATABASE_NAME: "jagalchi_ai"
+      DATABASE_USER: "jagalchi_ai"
+      DATABASE_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      DATABASE_HOST: "ai-db"
+      DATABASE_PORT: "5432"
+      AI_AUTH_ENABLED: "true"
+      AI_AUTH_JWT_SECRET: "${AI_AUTH_JWT_SECRET:?AI_AUTH_JWT_SECRET is required}"
+      AI_DISABLE_EXTERNAL: "false"
+      AI_DISABLE_LLM: "false"
+      AI_V1_PROVIDER: "deepseek"
+      AI_V1_PROMPT_VERSION: "2026-09-03.3"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}"
+      DEEPSEEK_MODEL: "${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+      DEEPSEEK_EXTRACTION_MODEL: "${DEEPSEEK_EXTRACTION_MODEL:-deepseek-v4-flash}"
+      DEEPSEEK_PLANNING_MODEL: "${DEEPSEEK_PLANNING_MODEL:-deepseek-v4-pro}"
+      DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+      DEEPSEEK_TIMEOUT_SECONDS: "${DEEPSEEK_TIMEOUT_SECONDS:-20}"
+      DEEPSEEK_MAX_RETRIES: "${DEEPSEEK_MAX_RETRIES:-1}"
+      DEEPSEEK_THINKING_ENABLED: "${DEEPSEEK_THINKING_ENABLED:-false}"
+      AI_V1_REQUEST_TIMEOUT_SECONDS: "50"
+      AI_UPSTREAM_TIMEOUT_SECONDS: "65"
+      AI_GUNICORN_TIMEOUT_SECONDS: "75"
+      AI_OPERATION_LEASE_SECONDS: "120"
+      AI_OPERATION_HEARTBEAT_SECONDS: "30"
+    depends_on:
+      ai-db:
+        condition: service_healthy
+    restart: "no"
+
   ai:
     image: "${AI_IMAGE:?AI_IMAGE is required}"
     environment:
+      DEPLOYMENT_ENV: "production"
       DJANGO_SETTINGS_MODULE: "jagalchi_ai.settings"
       DJANGO_DEBUG: "false"
       DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY is required}"
@@ -114,12 +235,21 @@ services:
       AI_AUTH_JWT_SECRET: "${AI_AUTH_JWT_SECRET:?AI_AUTH_JWT_SECRET is required}"
       AI_DISABLE_EXTERNAL: "false"
       AI_DISABLE_LLM: "false"
+      AI_V1_PROVIDER: "deepseek"
+      AI_V1_PROMPT_VERSION: "2026-09-03.3"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}"
       DEEPSEEK_MODEL: "${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+      DEEPSEEK_EXTRACTION_MODEL: "${DEEPSEEK_EXTRACTION_MODEL:-deepseek-v4-flash}"
+      DEEPSEEK_PLANNING_MODEL: "${DEEPSEEK_PLANNING_MODEL:-deepseek-v4-pro}"
       DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
-      DEEPSEEK_TIMEOUT_SECONDS: "${DEEPSEEK_TIMEOUT_SECONDS:-45}"
-      DEEPSEEK_MAX_RETRIES: "${DEEPSEEK_MAX_RETRIES:-3}"
+      DEEPSEEK_TIMEOUT_SECONDS: "${DEEPSEEK_TIMEOUT_SECONDS:-20}"
+      DEEPSEEK_MAX_RETRIES: "${DEEPSEEK_MAX_RETRIES:-1}"
       DEEPSEEK_THINKING_ENABLED: "${DEEPSEEK_THINKING_ENABLED:-false}"
+      AI_V1_REQUEST_TIMEOUT_SECONDS: "50"
+      AI_UPSTREAM_TIMEOUT_SECONDS: "65"
+      AI_GUNICORN_TIMEOUT_SECONDS: "75"
+      AI_OPERATION_LEASE_SECONDS: "120"
+      AI_OPERATION_HEARTBEAT_SECONDS: "30"
       TAVILY_API_KEY: "${TAVILY_API_KEY:?TAVILY_API_KEY is required}"
       EXA_API_KEY: "${EXA_API_KEY:?EXA_API_KEY is required}"
       DATABASE_ENGINE: "django.db.backends.postgresql"
@@ -131,21 +261,12 @@ services:
       DATABASE_CONN_MAX_AGE: "60"
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-    command:
-      - /bin/sh
-      - -ec
-      - >-
-        python manage.py migrate --noinput &&
-        exec gunicorn --bind 0.0.0.0:8000 --workers 4
-        --worker-class uvicorn.workers.UvicornWorker --timeout 120
-        --graceful-timeout 30 --keep-alive 5 --max-requests 1000
-        --max-requests-jitter 50 --access-logfile - --error-logfile -
-        --capture-output --enable-stdio-inheritance jagalchi_ai.asgi:application
+    command: ["gunicorn", "--config", "gunicorn.conf.py", "jagalchi_ai.asgi:application"]
     expose:
       - "8000"
     depends_on:
-      ai-db:
-        condition: service_healthy
+      ai-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/ai/health/"]
       interval: 30s
