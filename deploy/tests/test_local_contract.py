@@ -22,6 +22,16 @@ class LocalStackContractTest(unittest.TestCase):
         for service in ("api:", "workflow-worker:", "api-seed:", "ai:", "api-db:", "ai-db:", "minio:"):
             self.assertIn(service, compose)
 
+    def test_local_e2e_completion_limit_is_local_and_shared(self) -> None:
+        local_compose = (ROOT / "compose.local.yml").read_text(encoding="utf-8")
+        production_compose = (ROOT / "compose.production.yml").read_text(encoding="utf-8")
+        env_example = (ROOT / "deploy/local.env.example").read_text(encoding="utf-8")
+
+        self.assertIn("E2E_COMPLETION_IP_LIMIT: ${E2E_COMPLETION_IP_LIMIT:-100}", local_compose)
+        self.assertGreaterEqual(local_compose.count("environment: *api-env"), 2)
+        self.assertIn("E2E_COMPLETION_IP_LIMIT=100", env_example)
+        self.assertNotIn("E2E_COMPLETION_IP_LIMIT", production_compose)
+
     def test_local_scripts_are_executable_and_parse(self) -> None:
         scripts = sorted((ROOT / "deploy").glob("local-*.sh"))
         self.assertGreaterEqual(len(scripts), 6)
