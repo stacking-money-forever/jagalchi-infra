@@ -12,5 +12,10 @@
   "phase2RequiredSpecs": [
     "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
     "e2e-v1-local/phase-two-wave-b-entry.spec.ts"
+  ],
+  "v1LocalRequiredSpecs": [
+    "e2e-v1-local/phase-one-entry.spec.ts",
+    "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+    "e2e-v1-local/phase-two-wave-b-entry.spec.ts"
   ]
 }

@@ -46,6 +46,7 @@ class BrowserGatePlan:
     standalone_command: list[str]
     integrated_build_command: list[str]
     integrated_playwright_command: list[str]
+    profile: str
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -85,6 +86,8 @@ def load_manifest(repo_root: Path) -> dict[str, Any]:
 
 WEB_DIR_PREFIX = "apps/web/"
 E2E_PREFIX = "e2e-v1-local/"
+SUPPORTED_PROFILES = frozenset({"phase1", "phase2", "full-web"})
+PROJECT_RUNS_PROFILES = frozenset({"phase2", "full-web"})
 
 
 def resolve_platform_inventory_path(platform_source: Path, relative: str) -> Path:
@@ -98,27 +101,65 @@ def playwright_spec_argument(spec_path: str) -> str:
         return spec_path[len(WEB_DIR_PREFIX) :]
     if spec_path.startswith(E2E_PREFIX):
         return spec_path
-    raise BrowserGateError("phase2 browser spec path must be web-relative")
+    raise BrowserGateError("browser spec path must be web-relative")
+
+
+def validate_spec_list(
+    platform_source: Path,
+    specs: object,
+    *,
+    manifest_key: str,
+) -> list[str]:
+    if not isinstance(specs, list) or not specs:
+        raise BrowserGateError(f"browser gate manifest {manifest_key} is invalid")
+    invalid = [
+        relative
+        for relative in specs
+        if not isinstance(relative, str) or relative.startswith(WEB_DIR_PREFIX)
+    ]
+    if invalid:
+        raise BrowserGateError(f"{manifest_key} browser spec paths must be web-relative")
+    missing = [
+        relative
+        for relative in specs
+        if not resolve_platform_inventory_path(platform_source, relative).is_file()
+    ]
+    if missing:
+        raise BrowserGateError(f"{manifest_key} browser spec is missing from platform checkout")
+    return [str(relative) for relative in specs]
+
+
+def manifest_specs_for_profile(
+    platform_source: Path,
+    manifest: dict[str, Any],
+    profile: str,
+) -> list[str]:
+    if profile == "phase2":
+        return validate_spec_list(
+            platform_source,
+            manifest.get("phase2RequiredSpecs"),
+            manifest_key="phase2RequiredSpecs",
+        )
+    if profile == "full-web":
+        return validate_spec_list(
+            platform_source,
+            manifest.get("v1LocalRequiredSpecs"),
+            manifest_key="v1LocalRequiredSpecs",
+        )
+    return []
 
 
 def validate_inventory(platform_source: Path, manifest: dict[str, Any]) -> None:
-    phase2_specs = manifest.get("phase2RequiredSpecs")
-    if not isinstance(phase2_specs, list) or not phase2_specs:
-        raise BrowserGateError("browser gate manifest phase2RequiredSpecs is invalid")
-    invalid_phase2 = [
-        relative
-        for relative in phase2_specs
-        if not isinstance(relative, str) or relative.startswith(WEB_DIR_PREFIX)
-    ]
-    if invalid_phase2:
-        raise BrowserGateError("phase2 browser spec paths must be web-relative")
-    missing_phase2 = [
-        relative
-        for relative in phase2_specs
-        if not resolve_platform_inventory_path(platform_source, relative).is_file()
-    ]
-    if missing_phase2:
-        raise BrowserGateError("phase 2 browser spec is missing from platform checkout")
+    validate_spec_list(
+        platform_source,
+        manifest.get("phase2RequiredSpecs"),
+        manifest_key="phase2RequiredSpecs",
+    )
+    validate_spec_list(
+        platform_source,
+        manifest.get("v1LocalRequiredSpecs"),
+        manifest_key="v1LocalRequiredSpecs",
+    )
 
     required_files = manifest.get("requiredFiles")
     if not isinstance(required_files, list) or not required_files:
@@ -189,7 +230,7 @@ def browser_gate_env(
         "NEXT_PUBLIC_PROOF_PROFILE_ENABLED": "true",
         "NEXT_PUBLIC_SITE_URL": "http://127.0.0.1:3100",
     }
-    if profile == "phase2":
+    if profile in PROJECT_RUNS_PROFILES:
         # Wave B entry routes compile to notFound() unless both flags are baked into `pnpm build`.
         playwright_env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"] = "true"
     return playwright_env
@@ -225,6 +266,8 @@ def build_plan(
     lock = json.loads((repo_root / "deploy/local-stack.lock.json").read_text(encoding="utf-8"))
     if allow_dev_head is None:
         allow_dev_head = os.environ.get("JAGALCHI_DEV_HEAD", "") == "true"
+    if profile not in SUPPORTED_PROFILES:
+        raise BrowserGateError(f"unsupported browser gate profile: {profile}")
     platform_revision = validate_platform_revision(platform_source, lock, allow_dev_head=allow_dev_head)
     playwright_env = browser_gate_env(env, seed, profile=profile) if require_seed else {}
     test_script = platform_source / "scripts/test-v1-local-e2e.sh"
@@ -241,12 +284,8 @@ def build_plan(
         "--config",
         "playwright.v1-local.config.ts",
     ]
-    if profile == "phase2":
-        phase2_specs = manifest.get("phase2RequiredSpecs")
-        if not isinstance(phase2_specs, list) or not phase2_specs:
-            raise BrowserGateError("phase2 browser manifest is incomplete")
-        for spec in phase2_specs:
-            integrated_playwright_command.append(playwright_spec_argument(str(spec)))
+    for spec in manifest_specs_for_profile(platform_source, manifest, profile):
+        integrated_playwright_command.append(playwright_spec_argument(spec))
     return BrowserGatePlan(
         platform_source=platform_source,
         platform_revision=platform_revision,
@@ -257,6 +296,7 @@ def build_plan(
         standalone_command=[str(test_script), str(repo_root), str(env_file)],
         integrated_build_command=["pnpm", "--dir", str(web_dir), "build"],
         integrated_playwright_command=integrated_playwright_command,
+        profile=profile,
     )
 
 
@@ -299,7 +339,7 @@ def integrated_playwright_commands(
     specs = playwright_specs(base)
     if not specs:
         return [base]
-    if between_spec_runs is not None and len(specs) > 1:
+    if between_spec_runs is not None and len(specs) > 1 and plan.profile == "phase2":
         return [playwright_command_for_specs(base, [spec]) for spec in specs]
     return [base]
 
@@ -347,19 +387,65 @@ def main() -> None:
     validate_parser.add_argument("--repo-root", required=True, type=Path)
     validate_parser.add_argument("--seed-receipt", default="{}")
     validate_parser.add_argument("--allow-dev-head", action="store_true")
+    validate_parser.add_argument("--profile", default="phase1", choices=sorted(SUPPORTED_PROFILES))
 
     run_parser = subparsers.add_parser("run-integrated")
     run_parser.add_argument("--env", required=True, type=Path)
     run_parser.add_argument("--repo-root", required=True, type=Path)
     run_parser.add_argument("--seed-receipt", required=True)
     run_parser.add_argument("--allow-dev-head", action="store_true")
+    run_parser.add_argument("--profile", default="phase1", choices=sorted(SUPPORTED_PROFILES))
 
     standalone_parser = subparsers.add_parser("run-standalone")
     standalone_parser.add_argument("--env", required=True, type=Path)
     standalone_parser.add_argument("--repo-root", required=True, type=Path)
     standalone_parser.add_argument("--seed-receipt", default="{}")
     standalone_parser.add_argument("--allow-dev-head", action="store_true")
+    standalone_parser.add_argument("--profile", default="phase1", choices=sorted(SUPPORTED_PROFILES))
 
     args = parser.parse_args()
     seed = json.loads(args.seed_receipt)
+    allow_dev_head = bool(args.allow_dev_head)
+    profile = str(args.profile)
 
+    try:
+        if args.command == "validate":
+            plan = build_plan(
+                repo_root=args.repo_root,
+                env_file=args.env,
+                seed=seed,
+                allow_dev_head=allow_dev_head,
+                profile=profile,
+            )
+            print(f"browser gate inventory: OK platform={plan.platform_revision} profile={profile}")
+            return
+        if args.command == "run-integrated":
+            plan = build_plan(
+                repo_root=args.repo_root,
+                env_file=args.env,
+                seed=seed,
+                allow_dev_head=allow_dev_head,
+                profile=profile,
+            )
+            revision = run_integrated(plan, read_env(args.env))
+            print(f"browser gate integrated: OK platform={revision} profile={profile}")
+            return
+        if args.command == "run-standalone":
+            plan = build_plan(
+                repo_root=args.repo_root,
+                env_file=args.env,
+                seed=seed,
+                allow_dev_head=allow_dev_head,
+                profile=profile,
+            )
+            revision = run_standalone(plan, read_env(args.env))
+            print(f"browser gate standalone: OK platform={revision} profile={profile}")
+            return
+        raise BrowserGateError(f"unsupported browser gate command: {args.command}")
+    except BrowserGateError as error:
+        print(f"browser gate: FAILED: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+
+
+if __name__ == "__main__":
+    main()

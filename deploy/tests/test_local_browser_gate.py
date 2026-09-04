@@ -309,7 +309,7 @@ class BrowserGateTests(unittest.TestCase):
             platform, _ = self._platform_tree(root)
             (platform / "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts").unlink()
             env_file = self._env_file(root, platform)
-            with self.assertRaisesRegex(BrowserGateError, "phase 2 browser spec is missing"):
+            with self.assertRaisesRegex(BrowserGateError, "phase2RequiredSpecs browser spec is missing"):
                 build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
 
     def test_missing_phase2_wave_b_entry_spec_fails_closed(self) -> None:
@@ -318,7 +318,7 @@ class BrowserGateTests(unittest.TestCase):
             platform, _ = self._platform_tree(root)
             (platform / "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts").unlink()
             env_file = self._env_file(root, platform)
-            with self.assertRaisesRegex(BrowserGateError, "phase 2 browser spec is missing"):
+            with self.assertRaisesRegex(BrowserGateError, "phase2RequiredSpecs browser spec is missing"):
                 build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
 
     def test_missing_required_wave_b_file_fails_closed(self) -> None:
@@ -330,6 +330,10 @@ class BrowserGateTests(unittest.TestCase):
             manifest_path = root / "infra" / "deploy/e2e-v1-local.manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["phase2RequiredSpecs"] = [
+                "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+            ]
+            manifest["v1LocalRequiredSpecs"] = [
+                "e2e-v1-local/phase-one-entry.spec.ts",
                 "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
             ]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -473,6 +477,111 @@ class BrowserGateTests(unittest.TestCase):
             with mock.patch("deploy.local_browser_gate.run_command", side_effect=fake_run):
                 revision = run_integrated(plan, {})
             self.assertEqual(len(revision), 40)
+
+
+    def test_manifest_requires_v1_local_specs(self) -> None:
+        manifest = json.loads((ROOT / "deploy/e2e-v1-local.manifest.json").read_text(encoding="utf-8"))
+        expected = [
+            "e2e-v1-local/phase-one-entry.spec.ts",
+            "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+            "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+        ]
+        self.assertEqual(manifest["v1LocalRequiredSpecs"], expected)
+
+    def test_build_plan_full_web_lists_all_v1_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="full-web",
+            )
+            spec_paths = [
+                argument
+                for argument in plan.integrated_playwright_command
+                if argument.endswith(".spec.ts")
+            ]
+            self.assertEqual(
+                spec_paths,
+                [
+                    "e2e-v1-local/phase-one-entry.spec.ts",
+                    "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+                    "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+                ],
+            )
+
+    def test_integrated_playwright_commands_full_web_stays_single_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="full-web",
+            )
+            commands = integrated_playwright_commands(plan, between_spec_runs=lambda: None)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(len([part for part in commands[0] if part.endswith(".spec.ts")]), 3)
+
+    def test_browser_gate_env_full_web_includes_project_runs(self) -> None:
+        env = browser_gate_env(
+            {
+                "LOCAL_SEED_EMAIL": "local@example.test",
+                "LOCAL_SEED_PASSWORD": "super-secret-password",
+            },
+            seed(),
+            profile="full-web",
+        )
+        self.assertEqual(env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "true")
+
+    def test_unsupported_profile_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            with self.assertRaisesRegex(BrowserGateError, "unsupported browser gate profile"):
+                build_plan(
+                    repo_root=root / "infra",
+                    env_file=env_file,
+                    seed=seed(),
+                    allow_dev_head=True,
+                    profile="not-a-profile",
+                )
+
+    def test_cli_validate_full_web_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(ROOT / "deploy/local_browser_gate.py"),
+                    "validate",
+                    "--env",
+                    str(env_file),
+                    "--repo-root",
+                    str(root / "infra"),
+                    "--seed-receipt",
+                    json.dumps(seed()),
+                    "--allow-dev-head",
+                    "--profile",
+                    "full-web",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("browser gate inventory: OK", completed.stdout)
+            self.assertIn("profile=full-web", completed.stdout)
 
 
 if __name__ == "__main__":
