@@ -212,7 +212,12 @@ def build_plan(
         phase2_specs = manifest.get("phase2RequiredSpecs")
         if not isinstance(phase2_specs, list) or not phase2_specs:
             raise BrowserGateError("phase2 browser manifest is incomplete")
-        integrated_playwright_command.extend(str(spec) for spec in phase2_specs)
+        for spec in phase2_specs:
+            spec_path = str(spec)
+            web_prefix = "apps/web/"
+            if spec_path.startswith(web_prefix):
+                spec_path = spec_path[len(web_prefix):]
+            integrated_playwright_command.append(spec_path)
     return BrowserGatePlan(
         platform_source=platform_source,
         platform_revision=platform_revision,

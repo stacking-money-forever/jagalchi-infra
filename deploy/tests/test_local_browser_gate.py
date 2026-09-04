@@ -109,8 +109,8 @@ class BrowserGateTests(unittest.TestCase):
                 profile="phase2",
             )
             joined = " ".join(plan.integrated_playwright_command)
-            self.assertIn("phase-two-map-focus-proof.spec.ts", joined)
-            self.assertNotIn("phase-one-entry.spec.ts", joined)
+            self.assertIn("e2e-v1-local/phase-two-map-focus-proof.spec.ts", joined)
+            self.assertNotIn("apps/web/", joined)
 
     def test_missing_manifest_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
