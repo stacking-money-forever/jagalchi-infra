@@ -72,6 +72,12 @@ class LocalStackContractTest(unittest.TestCase):
         self.assertEqual(lock["nodeMajor"], 24)
         self.assertEqual(lock["pnpm"], "10.33.2")
         self.assertRegex(lock["apiContractSha256"], r"^[0-9a-f]{64}$")
+        revisions = lock.get("revisions")
+        self.assertIsInstance(revisions, dict)
+        for key in ("platform", "api", "ai", "infra"):
+            value = revisions.get(key)
+            self.assertIsInstance(value, str, key)
+            self.assertRegex(value, r"^[0-9a-f]{40}$", key)
 
     def test_lock_validator_enforces_every_declared_runtime_boundary(self) -> None:
         lock = json.loads((ROOT / "deploy/local-stack.lock.json").read_text(encoding="utf-8"))
@@ -165,6 +171,84 @@ class LocalStackContractTest(unittest.TestCase):
             broken_env = provider_env | {"AI_V1_PROVIDER": "deepseek"}
             result = subprocess.run(command, check=False, capture_output=True, text=True, env=broken_env)
             self.assertNotEqual(result.returncode, 0, "providers")
+
+    def test_jagalchi_dev_head_bypasses_revision_pins_not_openapi_hash(self) -> None:
+        lock = json.loads((ROOT / "deploy/local-stack.lock.json").read_text(encoding="utf-8"))
+        validator = ROOT / "deploy/validate-local-lock.py"
+        compose_name = lock["composeFile"]
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            repo_root = temp_dir / "infra"
+            platform_source = temp_dir / "platform"
+            api_source = temp_dir / "api"
+            ai_source = temp_dir / "ai"
+            repo_root.mkdir()
+            shutil.copy2(ROOT / compose_name, repo_root / compose_name)
+
+            for source, remote, required in (
+                (platform_source, "stacking-money-forever/jagalchi-platform", lock["canonicalSources"]["platform"]["requiredFiles"]),
+                (api_source, "stacking-money-forever/jagalchi-api", lock["canonicalSources"]["api"]["requiredFiles"]),
+                (ai_source, "stacking-money-forever/jagalchi-ai", lock["canonicalSources"]["ai"]["requiredFiles"]),
+            ):
+                source.mkdir()
+                subprocess.run(["git", "init", "-q", str(source)], check=True)
+                subprocess.run(
+                    ["git", "-C", str(source), "remote", "add", "origin", f"https://github.com/{remote}.git"],
+                    check=True,
+                )
+                for relative in required:
+                    path = source / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("fixture\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(source), "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-qm", "fixture"],
+                    check=True, capture_output=True, text=True,
+                )
+
+            openapi_path = api_source / "contracts/openapi.json"
+            openapi_path.parent.mkdir(parents=True, exist_ok=True)
+            openapi_path.write_text("{}\n", encoding="utf-8")
+            lock = json.loads(json.dumps(lock))
+            lock["python"] = f"{os.sys.version_info.major}.{os.sys.version_info.minor}"
+            lock["apiContractSha256"] = __import__("hashlib").sha256(openapi_path.read_bytes()).hexdigest()
+            lock["revisions"] = {
+                "platform": subprocess.run(["git", "-C", str(platform_source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip(),
+                "api": subprocess.run(["git", "-C", str(api_source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip(),
+                "ai": subprocess.run(["git", "-C", str(ai_source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip(),
+                "infra": "0" * 40,
+            }
+            lock_path = temp_dir / "lock.json"
+            lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+            command = [
+                "python3", str(validator), "--lock", str(lock_path), "--repo-root", str(repo_root),
+                "--platform-source", str(platform_source),
+                "--api-source", str(api_source), "--ai-source", str(ai_source),
+            ]
+            provider_env = os.environ | {
+                "JAGALCHI_LOCAL_MODE": "ci",
+                "JOB_SOURCE_PROVIDER": "fixture",
+                "GITHUB_PROVIDER": "fixture",
+                "AI_PROVIDER": "fixture",
+                "AI_V1_PROVIDER": "fake",
+                "AI_DISABLE_EXTERNAL": "true",
+                "AI_DISABLE_LLM": "true",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                "DEEPSEEK_EXTRACTION_MODEL": lock["providers"]["extractionModel"],
+                "DEEPSEEK_PLANNING_MODEL": lock["providers"]["planningModel"],
+                "JAGALCHI_DEV_HEAD": "true",
+            }
+            result = subprocess.run(command, check=False, capture_output=True, text=True, env=provider_env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            changed = dict(lock)
+            changed["apiContractSha256"] = "0" * 64
+            lock_path.write_text(json.dumps(changed), encoding="utf-8")
+            result = subprocess.run(command, check=False, capture_output=True, text=True, env=provider_env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("API OpenAPI contract hash differs", result.stderr)
 
     def test_minio_configures_browser_upload_cors(self) -> None:
         compose = (ROOT / "compose.local.yml").read_text(encoding="utf-8")

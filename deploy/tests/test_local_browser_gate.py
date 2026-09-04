@@ -9,6 +9,7 @@ from unittest import mock
 
 from deploy.local_browser_gate import (
     BrowserGateError,
+    browser_gate_env,
     build_plan,
     redact_output,
     run_integrated,
@@ -111,6 +112,80 @@ class BrowserGateTests(unittest.TestCase):
             joined = " ".join(plan.integrated_playwright_command)
             self.assertIn("e2e-v1-local/phase-two-map-focus-proof.spec.ts", joined)
             self.assertNotIn("apps/web/", joined)
+            for argument in plan.integrated_playwright_command:
+                if argument.endswith(".spec.ts"):
+                    self.assertFalse(argument.startswith("apps/web/"), argument)
+                    self.assertTrue(
+                        argument.startswith("e2e-v1-local/"),
+                        f"expected web-relative spec path, got {argument!r}",
+                    )
+
+    def test_build_plan_phase1_does_not_scope_phase2_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="phase1",
+            )
+            joined = " ".join(plan.integrated_playwright_command)
+            self.assertNotIn("phase-two-map-focus-proof.spec.ts", joined)
+            self.assertEqual(
+                plan.integrated_playwright_command[-1],
+                "playwright.v1-local.config.ts",
+            )
+
+    def test_browser_gate_env_disables_msw_mocking(self) -> None:
+        env = browser_gate_env(
+            {
+                "LOCAL_SEED_EMAIL": "local@example.test",
+                "LOCAL_SEED_PASSWORD": "super-secret-password",
+            },
+            seed(),
+        )
+        self.assertEqual(env["NEXT_PUBLIC_API_MOCKING"], "false")
+        self.assertEqual(env["NEXT_PUBLIC_E2E_MOCKING"], "false")
+        self.assertEqual(env["NEXT_PUBLIC_API_URL"], "/api")
+        self.assertEqual(env["API_ORIGIN"], "http://127.0.0.1:8080")
+
+    def test_build_plan_keeps_standalone_no_msw_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="phase2",
+            )
+            self.assertEqual(
+                Path(plan.standalone_command[0]).name,
+                "test-v1-local-e2e.sh",
+            )
+
+    def test_build_plan_phase2_required_specs_must_be_non_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            manifest_path = root / "infra" / "deploy/e2e-v1-local.manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["phase2RequiredSpecs"] = []
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(BrowserGateError, "phase2RequiredSpecs is invalid"):
+                build_plan(
+                    repo_root=root / "infra",
+                    env_file=env_file,
+                    seed=seed(),
+                    allow_dev_head=True,
+                    profile="phase2",
+                )
 
     def test_missing_manifest_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

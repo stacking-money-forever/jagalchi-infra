@@ -4,9 +4,12 @@ import subprocess
 import hashlib
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from deploy.local_acceptance import (
     HttpResponse,
@@ -551,6 +554,98 @@ class LocalAcceptanceTests(unittest.TestCase):
         self.assertNotIn("local-reset.sh --confirm", source)
         self.assertIn("--profile", source)
         self.assertTrue((ROOT / "deploy/local-browser-gate.sh").is_file())
+
+    def test_run_no_msw_browser_imports_sibling_module(self) -> None:
+        source = (ROOT / "deploy/local_acceptance.py").read_text(encoding="utf-8")
+        self.assertIn("from local_browser_gate import", source)
+        self.assertNotIn("from deploy.local_browser_gate import", source)
+
+    def test_phase2_run_order_places_browser_gate_before_proof(self) -> None:
+        source = (ROOT / "deploy/local_acceptance.py").read_text(encoding="utf-8")
+        browser_index = source.index("self.run_no_msw_browser()")
+        proof_index = source.index("self.run_task_verification_proof()")
+        self.assertLess(browser_index, proof_index)
+
+    def test_run_no_msw_browser_restarts_api_before_playwright(self) -> None:
+        events: list[str] = []
+        fake_gate = types.ModuleType("local_browser_gate")
+
+        def fake_build_plan(**_kwargs):
+            events.append("build_plan")
+            return object()
+
+        def fake_run_integrated(_plan, _env):
+            events.append("run_integrated")
+            return "b" * 40
+
+        def fake_read_env(_path):
+            return {}
+
+        fake_gate.BrowserGateError = RuntimeError
+        fake_gate.build_plan = fake_build_plan
+        fake_gate.read_env = fake_read_env
+        fake_gate.run_integrated = fake_run_integrated
+
+        class RecordingCommands(FakeCommands):
+            def run(self, command, *, check=True):
+                events.append(" ".join(command))
+                return super().run(command, check=check)
+
+        class BrowserAcceptance(LocalAcceptance):
+            def wait_for_health_ready(self, timeout_seconds: int = 60) -> None:
+                events.append(f"wait_for_health_ready:{timeout_seconds}")
+
+        env_file = ROOT / "deploy/tests/.browser-gate-order.env"
+        previous = os.environ.get("JAGALCHI_ACCEPTANCE_ENV_FILE")
+        os.environ["JAGALCHI_ACCEPTANCE_ENV_FILE"] = str(env_file)
+        env_file.write_text(
+            "\n".join(
+                [
+                    "LOCAL_SEED_EMAIL=local@example.test",
+                    "LOCAL_SEED_PASSWORD=super-secret-password",
+                    f"PLATFORM_SOURCE_DIR={ROOT}",
+                    f"API_SOURCE_DIR={ROOT}",
+                    f"AI_SOURCE_DIR={ROOT}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch.dict(sys.modules, {"local_browser_gate": fake_gate}):
+                acceptance = BrowserAcceptance(
+                    FakeHttp(),
+                    RecordingCommands(),
+                    environment(ROOT),
+                    {
+                        "schemaVersion": 1,
+                        "userId": uid(1),
+                        "projectRunId": uid(2),
+                        "roadmapId": uid(3),
+                    },
+                    ["docker", "compose", "-p", "jagalchi-v1-local"],
+                    ROOT,
+                    repo_root=ROOT,
+                    profile="phase2",
+                )
+                acceptance.run_no_msw_browser()
+        finally:
+            if previous is None:
+                os.environ.pop("JAGALCHI_ACCEPTANCE_ENV_FILE", None)
+            else:
+                os.environ["JAGALCHI_ACCEPTANCE_ENV_FILE"] = previous
+            env_file.unlink(missing_ok=True)
+
+        restart_index = next(
+            index for index, event in enumerate(events) if event.endswith(" restart api")
+        )
+        health_index = next(
+            index for index, event in enumerate(events) if event.startswith("wait_for_health_ready:")
+        )
+        build_index = events.index("build_plan")
+        playwright_index = events.index("run_integrated")
+        self.assertLess(restart_index, health_index)
+        self.assertLess(health_index, build_index)
+        self.assertLess(build_index, playwright_index)
 
 
 if __name__ == "__main__":
