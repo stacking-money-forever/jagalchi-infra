@@ -91,9 +91,9 @@
   "jagalchi-platform/services/ai"
  ],
  "revisions": {
-    "platform": "50ddc48871ec7d13c3edf2a7116a000d68c3c52f",
+  "platform": "50ddc48871ec7d13c3edf2a7116a000d68c3c52f",
   "api": "93554ba26c28dfd265add73b7d75ab4c9413ca89",
-    "ai": "08c7fc6325e3eecfdb83bc2a57d7db8a265053db",
-    "infra": "7830b10f381ba7adbbe391b9c2690d9b321a3449"
+  "ai": "08c7fc6325e3eecfdb83bc2a57d7db8a265053db",
+  "infra": "871a48ce9c81dd9271eb8daffd8b19bcac00d08d"
  }
 }
