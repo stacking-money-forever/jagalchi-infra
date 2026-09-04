@@ -90,10 +90,10 @@
   "jagalchi-platform/services/api",
   "jagalchi-platform/services/ai"
  ],
- "revisions": {
-  "platform": "b2822f99940ced89f515c4c6711e6130d2590622",
-  "api": "21a7552d57d1c55fd9f9a76ea3dab86eb9cc55f9",
-  "ai": "cf5cd17fedb2cbba0bfd94cf4c55ebdb50ff4264",
-  "infra": "5de3c24a631fefc23dc08c724391c8605397181e"
- }
+  "revisions": {
+    "platform": "0157f22e6fd21aa364db7e4f509528b19e6ffe3f",
+    "api": "50c3f55618d062fc5a52c28afdb7cfaa354f35cc",
+    "ai": "55f82d81a83bf144a7be197d46d2267e4cdf83a7",
+    "infra": "2f29b1efd1f8c352ac322edfadc677f46f47d9e3"
+  }
 }
