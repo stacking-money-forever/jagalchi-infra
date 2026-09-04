@@ -5,6 +5,7 @@ Cross-service production deployment for Jagalchi.
 - NestJS product API: [`stacking-money-forever/jagalchi-api`](https://github.com/stacking-money-forever/jagalchi-api)
 - Django AI runtime: [`stacking-money-forever/jagalchi-ai`](https://github.com/stacking-money-forever/jagalchi-ai)
 - Detailed operator runbook: [`deploy/README.md`](./deploy/README.md)
+- Production ownership contract: [`deploy/PRODUCTION-OWNERSHIP.md`](./deploy/PRODUCTION-OWNERSHIP.md)
 
 This repository owns the reviewed combination of service images, ingress, PostgreSQL connectivity, object storage, backup, restore, smoke, rollback, and deployment automation. It does not build application source. `API_IMAGE` and `AI_IMAGE` must pin reviewed GHCR tags in the server-owned production environment file.
 

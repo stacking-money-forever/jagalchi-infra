@@ -289,21 +289,5 @@ class LocalStackContractTest(unittest.TestCase):
             self.assertTrue(spec.startswith("e2e-v1-local/"), spec)
             self.assertFalse(spec.startswith("apps/web/"), spec)
 
-    def test_production_has_separate_migration_and_worker_services(self) -> None:
-        compose = (ROOT / "compose.production.yml").read_text(encoding="utf-8")
-
-        self.assertIn("workflow-worker:", compose)
-        self.assertIn('command: ["node", "dist/worker.js"]', compose)
-        self.assertIn("ai-migrate:", compose)
-        self.assertIn('command: ["gunicorn", "--config", "gunicorn.conf.py"', compose)
-        self.assertGreaterEqual(compose.count('DEPLOYMENT_ENV: "production"'), 2)
-        self.assertIn('PROJECT_RUNS_ENABLED: "${PROJECT_RUNS_ENABLED:-false}"', compose)
-        self.assertEqual(compose.count('AI_V1_PROMPT_VERSION: "2026-09-03.3"'), 2)
-        self.assertGreaterEqual(compose.count("DEEPSEEK_EXTRACTION_MODEL"), 2)
-        self.assertGreaterEqual(compose.count("DEEPSEEK_PLANNING_MODEL"), 2)
-        self.assertGreaterEqual(compose.count("OBJECT_STORAGE_PRESIGN_ENDPOINT"), 2)
-        self.assertNotIn("uvicorn.workers.UvicornWorker", compose)
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,7 @@
 # Personal server deployment
 
+Ownership contract: [`PRODUCTION-OWNERSHIP.md`](./PRODUCTION-OWNERSHIP.md).
+
 The current release target is the Vercel-hosted web application backed by a
 single personal-server VM. The VM runs the Nest API, a separate Nest workflow
 worker, Django AI service, AI
