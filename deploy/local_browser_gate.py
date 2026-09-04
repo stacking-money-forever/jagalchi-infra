@@ -82,14 +82,39 @@ def load_manifest(repo_root: Path) -> dict[str, Any]:
     return manifest
 
 
+WEB_DIR_PREFIX = "apps/web/"
+E2E_PREFIX = "e2e-v1-local/"
+
+
+def resolve_platform_inventory_path(platform_source: Path, relative: str) -> Path:
+    if relative.startswith(E2E_PREFIX):
+        return platform_source / WEB_DIR_PREFIX / relative
+    return platform_source / relative
+
+
+def playwright_spec_argument(spec_path: str) -> str:
+    if spec_path.startswith(WEB_DIR_PREFIX):
+        return spec_path[len(WEB_DIR_PREFIX) :]
+    if spec_path.startswith(E2E_PREFIX):
+        return spec_path
+    raise BrowserGateError("phase2 browser spec path must be web-relative")
+
+
 def validate_inventory(platform_source: Path, manifest: dict[str, Any]) -> None:
     phase2_specs = manifest.get("phase2RequiredSpecs")
     if not isinstance(phase2_specs, list) or not phase2_specs:
         raise BrowserGateError("browser gate manifest phase2RequiredSpecs is invalid")
+    invalid_phase2 = [
+        relative
+        for relative in phase2_specs
+        if not isinstance(relative, str) or relative.startswith(WEB_DIR_PREFIX)
+    ]
+    if invalid_phase2:
+        raise BrowserGateError("phase2 browser spec paths must be web-relative")
     missing_phase2 = [
         relative
         for relative in phase2_specs
-        if not isinstance(relative, str) or not (platform_source / relative).is_file()
+        if not resolve_platform_inventory_path(platform_source, relative).is_file()
     ]
     if missing_phase2:
         raise BrowserGateError("phase 2 browser spec is missing from platform checkout")
@@ -100,7 +125,8 @@ def validate_inventory(platform_source: Path, manifest: dict[str, Any]) -> None:
     missing = [
         relative
         for relative in required_files
-        if not isinstance(relative, str) or not (platform_source / relative).is_file()
+        if not isinstance(relative, str)
+        or not resolve_platform_inventory_path(platform_source, relative).is_file()
     ]
     if missing:
         raise BrowserGateError("browser gate platform inventory is incomplete")
@@ -213,11 +239,7 @@ def build_plan(
         if not isinstance(phase2_specs, list) or not phase2_specs:
             raise BrowserGateError("phase2 browser manifest is incomplete")
         for spec in phase2_specs:
-            spec_path = str(spec)
-            web_prefix = "apps/web/"
-            if spec_path.startswith(web_prefix):
-                spec_path = spec_path[len(web_prefix):]
-            integrated_playwright_command.append(spec_path)
+            integrated_playwright_command.append(playwright_spec_argument(str(spec)))
     return BrowserGatePlan(
         platform_source=platform_source,
         platform_revision=platform_revision,

@@ -270,12 +270,15 @@ class LocalStackContractTest(unittest.TestCase):
 
     def test_e2e_manifest_requires_phase2_wave_b_entry_spec(self) -> None:
         manifest = json.loads((ROOT / "deploy/e2e-v1-local.manifest.json").read_text(encoding="utf-8"))
-        map_focus = "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts"
-        wave_b = "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts"
+        map_focus = "e2e-v1-local/phase-two-map-focus-proof.spec.ts"
+        wave_b = "e2e-v1-local/phase-two-wave-b-entry.spec.ts"
         self.assertEqual(manifest.get("schemaVersion"), 1)
         self.assertIn(map_focus, manifest["requiredFiles"])
         self.assertIn(wave_b, manifest["requiredFiles"])
         self.assertEqual(manifest["phase2RequiredSpecs"], [map_focus, wave_b])
+        for spec in manifest["phase2RequiredSpecs"]:
+            self.assertTrue(spec.startswith("e2e-v1-local/"), spec)
+            self.assertFalse(spec.startswith("apps/web/"), spec)
 
     def test_production_has_separate_migration_and_worker_services(self) -> None:
         compose = (ROOT / "compose.production.yml").read_text(encoding="utf-8")

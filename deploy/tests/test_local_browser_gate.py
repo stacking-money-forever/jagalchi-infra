@@ -211,11 +211,14 @@ class BrowserGateTests(unittest.TestCase):
 
     def test_manifest_requires_both_phase2_specs(self) -> None:
         manifest = json.loads((ROOT / "deploy/e2e-v1-local.manifest.json").read_text(encoding="utf-8"))
-        map_focus = "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts"
-        wave_b = "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts"
+        map_focus = "e2e-v1-local/phase-two-map-focus-proof.spec.ts"
+        wave_b = "e2e-v1-local/phase-two-wave-b-entry.spec.ts"
         self.assertIn(map_focus, manifest["requiredFiles"])
         self.assertIn(wave_b, manifest["requiredFiles"])
         self.assertEqual(manifest["phase2RequiredSpecs"], [map_focus, wave_b])
+        for spec in manifest["phase2RequiredSpecs"]:
+            self.assertTrue(spec.startswith("e2e-v1-local/"), spec)
+            self.assertFalse(spec.startswith("apps/web/"), spec)
 
     def test_missing_phase2_map_focus_spec_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -244,7 +247,7 @@ class BrowserGateTests(unittest.TestCase):
             manifest_path = root / "infra" / "deploy/e2e-v1-local.manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["phase2RequiredSpecs"] = [
-                "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+                "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
             ]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             env_file = self._env_file(root, platform)
@@ -269,6 +272,20 @@ class BrowserGateTests(unittest.TestCase):
                 plan.integrated_playwright_command[-1],
                 "playwright.v1-local.config.ts",
             )
+
+    def test_non_web_relative_phase2_spec_paths_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            manifest_path = root / "infra" / "deploy/e2e-v1-local.manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["phase2RequiredSpecs"] = [
+                "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+            ]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(BrowserGateError, "must be web-relative"):
+                build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
 
     def test_wrong_revision_without_dev_head_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
