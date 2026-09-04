@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -88,6 +89,8 @@ WEB_DIR_PREFIX = "apps/web/"
 E2E_PREFIX = "e2e-v1-local/"
 SUPPORTED_PROFILES = frozenset({"phase1", "phase2", "full-web"})
 PROJECT_RUNS_PROFILES = frozenset({"phase2", "full-web"})
+FULL_WEB_PROFILE = "full-web"
+PLAYWRIGHT_ARTIFACT_DIRS = ("test-results", "e2e-v1-local/.auth")
 
 
 def resolve_platform_inventory_path(platform_source: Path, relative: str) -> Path:
@@ -378,6 +381,40 @@ def run_standalone(plan: BrowserGatePlan, env: dict[str, str]) -> str:
     return plan.platform_revision
 
 
+
+def platform_web_dir(platform_source: Path) -> Path:
+    return platform_source / "apps/web"
+
+
+def prepare_playwright_artifact_dirs(platform_source: Path) -> list[str]:
+    """Remove stale Playwright artifacts so auth.setup starts from a clean storageState."""
+    cleared: list[str] = []
+    web_dir = platform_web_dir(platform_source)
+    for relative in PLAYWRIGHT_ARTIFACT_DIRS:
+        target = web_dir / relative
+        if target.exists():
+            shutil.rmtree(target)
+            cleared.append(relative)
+    return cleared
+
+
+def run_full_web_e2e(
+    *,
+    repo_root: Path,
+    env_file: Path,
+    seed: dict[str, Any],
+    allow_dev_head: bool = False,
+) -> str:
+    plan = build_plan(
+        repo_root=repo_root,
+        env_file=env_file,
+        seed=seed,
+        allow_dev_head=allow_dev_head,
+        profile=FULL_WEB_PROFILE,
+    )
+    prepare_playwright_artifact_dirs(plan.platform_source)
+    return run_integrated(plan, read_env(env_file), between_spec_runs=None)
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -403,10 +440,16 @@ def main() -> None:
     standalone_parser.add_argument("--allow-dev-head", action="store_true")
     standalone_parser.add_argument("--profile", default="phase1", choices=sorted(SUPPORTED_PROFILES))
 
+    full_web_parser = subparsers.add_parser("run-full-web-e2e")
+    full_web_parser.add_argument("--env", required=True, type=Path)
+    full_web_parser.add_argument("--repo-root", required=True, type=Path)
+    full_web_parser.add_argument("--seed-receipt", required=True)
+    full_web_parser.add_argument("--allow-dev-head", action="store_true")
+
     args = parser.parse_args()
     seed = json.loads(args.seed_receipt)
     allow_dev_head = bool(args.allow_dev_head)
-    profile = str(args.profile)
+    profile = str(getattr(args, "profile", FULL_WEB_PROFILE))
 
     try:
         if args.command == "validate":
@@ -440,6 +483,15 @@ def main() -> None:
             )
             revision = run_standalone(plan, read_env(args.env))
             print(f"browser gate standalone: OK platform={revision} profile={profile}")
+            return
+        if args.command == "run-full-web-e2e":
+            revision = run_full_web_e2e(
+                repo_root=args.repo_root,
+                env_file=args.env,
+                seed=seed,
+                allow_dev_head=allow_dev_head,
+            )
+            print(f"full-web e2e: OK platform={revision} specs=7 profile={FULL_WEB_PROFILE}")
             return
         raise BrowserGateError(f"unsupported browser gate command: {args.command}")
     except BrowserGateError as error:

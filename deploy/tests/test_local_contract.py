@@ -29,6 +29,15 @@ class LocalStackContractTest(unittest.TestCase):
             self.assertTrue(os.access(script, os.X_OK), script.name)
             subprocess.run(["bash", "-n", str(script)], check=True)
 
+    def test_full_web_e2e_runner_wires_doctor_seed_and_python_gate(self) -> None:
+        script = (ROOT / "deploy/local-full-web-e2e.sh").read_text(encoding="utf-8")
+        self.assertIn('load_local_stack_lock "$repo_root"', script)
+        self.assertIn('"$repo_root/deploy/local-doctor.sh" "$env_file"', script)
+        self.assertIn('"$repo_root/deploy/local-seed.sh" "$env_file"', script)
+        self.assertIn("run-full-web-e2e", script)
+        self.assertIn("--reset", script)
+
+
     def test_reset_requires_exact_confirmation(self) -> None:
         result = subprocess.run(
             [str(ROOT / "deploy/local-reset.sh"), str(ROOT / "deploy/local.env.example")],

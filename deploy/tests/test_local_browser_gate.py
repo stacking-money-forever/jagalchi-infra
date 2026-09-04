@@ -12,7 +12,9 @@ from deploy.local_browser_gate import (
     browser_gate_env,
     build_plan,
     integrated_playwright_commands,
+    prepare_playwright_artifact_dirs,
     redact_output,
+    run_full_web_e2e,
     run_integrated,
     run_standalone,
 )
@@ -583,6 +585,86 @@ class BrowserGateTests(unittest.TestCase):
             self.assertIn("browser gate inventory: OK", completed.stdout)
             self.assertIn("profile=full-web", completed.stdout)
 
+
+    def test_prepare_playwright_artifact_dirs_clears_stale_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            web_dir = platform / "apps/web"
+            (web_dir / "test-results/trace.zip").parent.mkdir(parents=True)
+            (web_dir / "test-results/trace.zip").write_text("stale", encoding="utf-8")
+            (web_dir / "e2e-v1-local/.auth/seed-user.json").parent.mkdir(parents=True)
+            (web_dir / "e2e-v1-local/.auth/seed-user.json").write_text("{}", encoding="utf-8")
+
+            cleared = prepare_playwright_artifact_dirs(platform)
+
+            self.assertEqual(sorted(cleared), ["e2e-v1-local/.auth", "test-results"])
+            self.assertFalse((web_dir / "test-results").exists())
+            self.assertFalse((web_dir / "e2e-v1-local/.auth").exists())
+
+    def test_prepare_playwright_artifact_dirs_noop_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            self.assertEqual(prepare_playwright_artifact_dirs(platform), [])
+
+    @mock.patch("deploy.local_browser_gate.run_integrated", return_value="a" * 40)
+    @mock.patch("deploy.local_browser_gate.prepare_playwright_artifact_dirs", return_value=["test-results"])
+    def test_run_full_web_e2e_prepares_then_runs_single_integrated_pass(
+        self,
+        prepare_mock: mock.MagicMock,
+        integrated_mock: mock.MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            revision = run_full_web_e2e(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+            )
+            self.assertEqual(revision, "a" * 40)
+            prepare_mock.assert_called_once_with(platform.resolve())
+            integrated_mock.assert_called_once()
+            plan = integrated_mock.call_args.args[0]
+            self.assertEqual(plan.profile, "full-web")
+            self.assertIsNone(integrated_mock.call_args.kwargs.get("between_spec_runs"))
+
+    def test_cli_run_full_web_e2e_fails_closed_without_seed_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(ROOT / "deploy/local_browser_gate.py"),
+                    "run-full-web-e2e",
+                    "--env",
+                    str(env_file),
+                    "--repo-root",
+                    str(root / "infra"),
+                    "--seed-receipt",
+                    json.dumps({"schemaVersion": 1}),
+                    "--allow-dev-head",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("browser gate: FAILED", completed.stderr)
+
+    def test_full_web_runner_script_orchestrates_clean_seed_gate(self) -> None:
+        script = (ROOT / "deploy/local-full-web-e2e.sh").read_text(encoding="utf-8")
+        self.assertIn("local-doctor.sh", script)
+        self.assertIn("--reset", script)
+        self.assertIn("local-reset.sh", script)
+        self.assertIn("local-seed.sh", script)
+        self.assertIn("run-full-web-e2e", script)
+        self.assertNotIn("run-integrated", script)
 
 if __name__ == "__main__":
     unittest.main()
