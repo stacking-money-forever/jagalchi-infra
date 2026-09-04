@@ -268,7 +268,7 @@ class ProofHttp:
             "id": self.run_id,
             "version": self.version,
             "state": self.run_state,
-            "repositoryBinding": {"expectedHeadSha": self.HEAD_SHA},
+            "repositoryBinding": {"headSha": self.HEAD_SHA},
             "tasks": [{
                 "id": SEED_TASK_KEY,
                 "state": self.task_state,

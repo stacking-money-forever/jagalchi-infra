@@ -652,7 +652,7 @@ class LocalAcceptance:
         if object_path(task, "state") != "READY":
             raise AcceptanceError("seed task must start in READY state")
         version = object_path(run, "version")
-        expected_head = object_path(object_path(run, "repositoryBinding"), "expectedHeadSha")
+        expected_head = object_path(object_path(run, "repositoryBinding"), "headSha")
 
         started = self.http.request(
             "POST",
