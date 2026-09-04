@@ -243,7 +243,7 @@ class LocalAcceptance:
     def run_no_msw_browser(self) -> None:
         if self.repo_root is None:
             raise AcceptanceError("browser gate requires the infra repository root")
-        from deploy.local_browser_gate import BrowserGateError, build_plan, read_env, run_integrated
+        from local_browser_gate import BrowserGateError, build_plan, read_env, run_integrated
 
         env_file = Path(os.environ.get("JAGALCHI_ACCEPTANCE_ENV_FILE", ""))
         if not env_file.is_file():
