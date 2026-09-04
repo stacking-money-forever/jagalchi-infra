@@ -23,6 +23,9 @@ UUID_RE = re.compile(
 )
 FIXTURE_JOB_URL = "https://fixture.invalid/jobs/software-engineer"
 API_BASE_URL = "http://127.0.0.1:8080/api"
+SEED_TASK_KEY = "seed-task-1"
+SEED_EVIDENCE_RULES = ["PR", "CHANGED_PATH:src/core.ts", "NAMED_CHECK:ci/test"]
+EXPECTED_PROOF_EVALUATION_TYPES = frozenset({"MERGED_PR", "CHANGED_PATH", "NAMED_CHECK"})
 
 
 class AcceptanceError(RuntimeError):
@@ -183,6 +186,10 @@ class LocalAcceptance:
         self.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self.client_ids: set[str] = set()
         self.resource_ids: set[str] = set()
+        self.proof_run_label = "seed"
+        self.proof_snapshot_id: str | None = None
+        self.reverified_snapshot_id: str | None = None
+        self.publication_state: str | None = None
 
     def run(self) -> None:
         self.validate_environment()
@@ -190,6 +197,8 @@ class LocalAcceptance:
         self.run_fixture_path()
         self.run_upload_lifecycle()
         self.run_worker_recovery()
+        self.run_task_verification_proof()
+        self.run_restart_retention()
         self.write_receipt()
         print(f"local acceptance: OK mode={self.env['JAGALCHI_LOCAL_MODE']} namespace={self.namespace}")
 
@@ -263,8 +272,8 @@ class LocalAcceptance:
             and not matrix["externalDisabled"]
             and not matrix["llmDisabled"]
         )
-        receipt = {
-            "receiptVersion": 1,
+        receipt: dict[str, Any] = {
+            "receiptVersion": 2,
             "mode": mode,
             "startedAt": self.started_at,
             "completedAt": completed_at,
@@ -287,7 +296,13 @@ class LocalAcceptance:
                 "valid-project-plan",
                 "upload-lifecycle",
                 "worker-expired-lease-recovery",
+                "task-verification-proof",
+                "restart-retention",
             ],
+            "proofRunId": self.proof_run_label,
+            "proofSnapshotId": self.proof_snapshot_id,
+            "reverifiedSnapshotId": self.reverified_snapshot_id,
+            "publicationState": self.publication_state,
         }
         evidence_dir = self.repo_root / ".evidence"
         evidence_dir.mkdir(mode=0o700, exist_ok=True)
@@ -510,6 +525,188 @@ class LocalAcceptance:
             self.commands.run(["docker", "rm", "-f", name], check=False)
         if operation_id is None:
             raise AcceptanceError("worker recovery did not create an operation")
+
+
+    def version_headers(self, version: int) -> dict[str, str]:
+        headers = self.idempotency_headers()
+        headers["If-Match"] = str(version)
+        return headers
+
+    def get_project_run(self, run_id: str) -> dict[str, Any]:
+        return self.http.request("GET", f"/project-runs/{run_id}").body
+
+    def seed_task(self, run: dict[str, Any]) -> dict[str, Any]:
+        tasks = object_path(run, "tasks")
+        if not isinstance(tasks, list):
+            raise AcceptanceError("project run tasks are missing")
+        for task in tasks:
+            if object_path(task, "id") == SEED_TASK_KEY:
+                return task
+        raise AcceptanceError("seed task is missing from project run projection")
+
+    def assert_seed_evidence_rules(self, task: dict[str, Any]) -> None:
+        requirements = object_path(task, "evidenceRequirements")
+        if requirements != SEED_EVIDENCE_RULES:
+            raise AcceptanceError("seed task evidence requirements do not match fixture contract")
+
+    def assert_proof_evaluations(self, facts: dict[str, Any]) -> None:
+        evaluations = object_path(facts, "evaluations")
+        if not isinstance(evaluations, list) or len(evaluations) != len(SEED_EVIDENCE_RULES):
+            raise AcceptanceError("machine proof must evaluate every configured evidence rule")
+        seen_types: set[str] = set()
+        for evaluation in evaluations:
+            if not isinstance(evaluation, dict):
+                raise AcceptanceError("proof evaluation is malformed")
+            if evaluation.get("passed") is not True:
+                raise AcceptanceError("proof evaluation must pass under fixture facts")
+            rule_type = evaluation.get("type")
+            if not isinstance(rule_type, str):
+                raise AcceptanceError("proof evaluation type is missing")
+            seen_types.add(rule_type)
+        if not EXPECTED_PROOF_EVALUATION_TYPES.issubset(seen_types):
+            raise AcceptanceError("proof evaluations omit expected fixture rule types")
+
+    def wait_for_health_ready(self, timeout_seconds: int = 60) -> None:
+        deadline = self.monotonic() + timeout_seconds
+        while self.monotonic() < deadline:
+            try:
+                response = self.http.request("GET", "/health/ready", expected=(200,))
+                if object_path(response.body, "status") == "ready":
+                    return
+            except AcceptanceError:
+                pass
+            self.sleep(1.0)
+        raise AcceptanceError("API readiness did not recover after restart")
+
+    def run_task_verification_proof(self) -> None:
+        run_id = self.seed["projectRunId"]
+        self.proof_run_label = "seed"
+        run = self.get_project_run(run_id)
+        task = self.seed_task(run)
+        self.assert_seed_evidence_rules(task)
+        if object_path(task, "state") != "READY":
+            raise AcceptanceError("seed task must start in READY state")
+        version = object_path(run, "version")
+        expected_head = object_path(object_path(run, "repositoryBinding"), "expectedHeadSha")
+
+        started = self.http.request(
+            "POST",
+            f"/project-runs/{run_id}/tasks/{SEED_TASK_KEY}/start",
+            body={},
+            headers=self.version_headers(version),
+            expected=(201,),
+        ).body
+        version = object_path(started, "version")
+        if object_path(self.seed_task(started), "state") != "IN_PROGRESS":
+            raise AcceptanceError("start did not move seed task to IN_PROGRESS")
+
+        verify_response = self.http.request(
+            "POST",
+            f"/project-runs/{run_id}/tasks/{SEED_TASK_KEY}/verify",
+            body={},
+            headers=self.version_headers(version),
+            expected=(202,),
+        ).body
+        verify_operation_id = require_uuid(object_path(verify_response, "operationId"), "task verification operation")
+        self.poll_operation(verify_operation_id)
+
+        verified = self.get_project_run(run_id)
+        if object_path(verified, "state") != "COMPLETED":
+            raise AcceptanceError("verification did not complete the project run")
+        if object_path(self.seed_task(verified), "state") != "DONE":
+            raise AcceptanceError("verification did not mark seed task DONE")
+        proof = object_path(verified, "proof")
+        facts = object_path(proof, "facts")
+        snapshot_id = require_uuid(object_path(facts, "snapshotId"), "proof snapshotId")
+        self.proof_snapshot_id = snapshot_id
+        if object_path(facts, "verificationLevel") != "MACHINE_VERIFIED":
+            raise AcceptanceError("proof verification level must be MACHINE_VERIFIED")
+        if object_path(facts, "headSha") != expected_head:
+            raise AcceptanceError("proof headSha does not match repository binding")
+        if object_path(object_path(proof, "publication"), "state") != "UNPUBLISHED":
+            raise AcceptanceError("proof must remain unpublished before publish")
+        self.assert_proof_evaluations(facts)
+
+        publish_version = object_path(verified, "version")
+        published = self.http.request(
+            "POST",
+            f"/project-runs/{run_id}/publish",
+            body={},
+            headers=self.version_headers(publish_version),
+            expected=(200, 201),
+        ).body
+        published_proof = object_path(published, "proof")
+        publication = object_path(published_proof, "publication")
+        if object_path(publication, "state") != "ACTIVE":
+            raise AcceptanceError("publish did not activate proof publication")
+        if not object_path(publication, "publicId"):
+            raise AcceptanceError("publish did not assign a publicId")
+        if object_path(object_path(published_proof, "verification"), "state") != "PASS":
+            raise AcceptanceError("published proof verification must be PASS")
+        self.publication_state = object_path(publication, "state")
+
+        reverify_version = object_path(published, "version")
+        reverify_response = self.http.request(
+            "POST",
+            f"/project-runs/{run_id}/reverify",
+            body={},
+            headers=self.version_headers(reverify_version),
+            expected=(202,),
+        ).body
+        reverify_operation_id = require_uuid(object_path(reverify_response, "id"), "reverify operation")
+        self.poll_operation(reverify_operation_id)
+
+        reverified = self.get_project_run(run_id)
+        new_facts = object_path(object_path(reverified, "proof"), "facts")
+        new_snapshot_id = require_uuid(object_path(new_facts, "snapshotId"), "reverified snapshotId")
+        if new_snapshot_id == snapshot_id:
+            raise AcceptanceError("reverify must mint a new proof snapshot")
+        self.reverified_snapshot_id = new_snapshot_id
+        self.assert_proof_evaluations(new_facts)
+
+    def run_restart_retention(self) -> None:
+        run_id = self.seed["projectRunId"]
+        if self.proof_snapshot_id is None or self.publication_state is None:
+            raise AcceptanceError("restart retention requires completed proof gate state")
+
+        import_response = self.http.request(
+            "POST",
+            "/career/target-imports",
+            body={"input": {"kind": "FETCHED_URL", "url": self.job_source_url()}},
+            headers=self.idempotency_headers(),
+            expected=(202,),
+        ).body
+        operation_id = require_uuid(object_path(import_response, "id"), "restart retention operation")
+        resource_ids_before = set(self.resource_ids)
+        try:
+            self.wait_for_state(operation_id, "RUNNING", 15)
+        except AcceptanceError:
+            pass
+        self.commands.run([*self.compose, "stop", "api"])
+        self.sleep(2)
+        self.commands.run([*self.compose, "up", "-d", "--no-deps", "api"])
+        self.wait_for_health_ready()
+        operation = self.poll_operation(operation_id, timeout_seconds=120)
+        resource_id = require_uuid(object_path(operation, "result", "resourceId"), "import resource")
+        if resource_id in resource_ids_before:
+            raise AcceptanceError("mid-poll restart produced a duplicate resource id")
+        self.record_resource(resource_id, "restart retention import")
+
+        preserved_publication = self.publication_state
+        self.commands.run([*self.compose, "stop", "api", "workflow-worker"])
+        self.sleep(2)
+        self.commands.run([*self.compose, "up", "-d", "--no-deps", "api", "workflow-worker"])
+        self.wait_for_health_ready()
+        restored = self.get_project_run(run_id)
+        if object_path(restored, "state") != "COMPLETED":
+            raise AcceptanceError("full backend restart did not retain COMPLETED run state")
+        if object_path(self.seed_task(restored), "state") != "DONE":
+            raise AcceptanceError("full backend restart did not retain DONE task state")
+        publication = object_path(object_path(restored, "proof"), "publication")
+        if object_path(publication, "state") != preserved_publication:
+            raise AcceptanceError("full backend restart did not retain publication state")
+        if object_path(publication, "state") != "ACTIVE":
+            raise AcceptanceError("publication must remain ACTIVE after backend restart")
 
     def create_and_poll(self, path: str, body: dict[str, Any], resource_type: str) -> str:
         response = self.http.request(

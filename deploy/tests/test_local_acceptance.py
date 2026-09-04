@@ -8,7 +8,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deploy.local_acceptance import HttpResponse, LocalAcceptance
+from deploy.local_acceptance import (
+    HttpResponse,
+    LocalAcceptance,
+    SEED_EVIDENCE_RULES,
+    SEED_TASK_KEY,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -201,6 +206,168 @@ class ReceiptAcceptance(LocalAcceptance):
     def run_worker_recovery(self) -> None:
         return None
 
+    def run_task_verification_proof(self) -> None:
+        return None
+
+    def run_restart_retention(self) -> None:
+        return None
+
+
+class ProofHttp:
+    HEAD_SHA = "a" * 40
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self.version = 1
+        self.task_state = "READY"
+        self.run_state = "ACTIVE"
+        self.publication_state = "UNPUBLISHED"
+        self.snapshot_id: str | None = None
+        self.reverified_snapshot_id: str | None = None
+        self.operations: dict[str, dict[str, object]] = {}
+        self.next_operation = 60
+        self.calls: list[tuple[str, str, object]] = []
+
+    def _evaluations(self) -> list[dict[str, object]]:
+        return [
+            {"ruleId": "rule-0", "type": "MERGED_PR", "passed": True, "code": "PASS"},
+            {"ruleId": "rule-1", "type": "CHANGED_PATH", "passed": True, "code": "PASS"},
+            {"ruleId": "rule-2", "type": "NAMED_CHECK", "passed": True, "code": "PASS"},
+        ]
+
+    def _projection(self) -> dict[str, object]:
+        proof = None
+        if self.snapshot_id is not None:
+            proof = {
+                "summary": "Verified",
+                "validUntil": None,
+                "publication": {"state": self.publication_state, "publicId": "proof-public" if self.publication_state == "ACTIVE" else None},
+                "verification": {"state": "PASS", "verifiedAt": "2026-09-03T00:00:00.000Z"},
+                "facts": {
+                    "snapshotId": self.reverified_snapshot_id or self.snapshot_id,
+                    "verificationLevel": "MACHINE_VERIFIED",
+                    "provider": "fixture",
+                    "repositoryId": "9000001",
+                    "pullNumber": 17,
+                    "headSha": self.HEAD_SHA,
+                    "observedAt": "2026-09-03T00:00:00.000Z",
+                    "evaluations": self._evaluations(),
+                },
+            }
+        return {
+            "id": self.run_id,
+            "version": self.version,
+            "state": self.run_state,
+            "repositoryBinding": {"expectedHeadSha": self.HEAD_SHA},
+            "tasks": [{
+                "id": SEED_TASK_KEY,
+                "state": self.task_state,
+                "evidenceRequirements": list(SEED_EVIDENCE_RULES),
+            }],
+            "proof": proof,
+        }
+
+    def request(self, method, target, *, body=None, headers=None, expected=(200,), follow_redirects=True):
+        self.calls.append((method, target, body))
+        response = self._response(method, target)
+        if response.status not in expected:
+            raise AssertionError((method, target, response.status, expected))
+        return response
+
+    def _response(self, method: str, target: str) -> HttpResponse:
+        if method == "GET" and target == "/health/ready":
+            return HttpResponse(200, {"status": "ready", "service": "jagalchi-api"})
+        if method == "GET" and target == f"/project-runs/{self.run_id}":
+            return HttpResponse(200, self._projection())
+        if method == "POST" and target == f"/project-runs/{self.run_id}/tasks/{SEED_TASK_KEY}/start":
+            self.version += 1
+            self.task_state = "IN_PROGRESS"
+            self.run_state = "ACTIVE"
+            return HttpResponse(201, self._projection())
+        if method == "POST" and target == f"/project-runs/{self.run_id}/tasks/{SEED_TASK_KEY}/verify":
+            operation_id = uid(self.next_operation)
+            self.next_operation += 1
+            self.version += 1
+            self.task_state = "VERIFYING"
+            self.operations[operation_id] = {
+                "id": operation_id,
+                "state": "PENDING",
+                "result": None,
+                "kind": "TASK_VERIFICATION",
+            }
+            body = self._projection()
+            body["operationId"] = operation_id
+            return HttpResponse(202, body)
+        if method == "GET" and target.startswith("/workflow-operations/"):
+            operation_id = target.rsplit("/", 1)[1]
+            operation = self.operations[operation_id]
+            if operation["state"] == "PENDING":
+                if operation.get("kind") == "PROOF_REVERIFICATION":
+                    self.version += 1
+                    self.reverified_snapshot_id = uid(51)
+                    operation["state"] = "SUCCEEDED"
+                    operation["result"] = {
+                        "resourceType": "PROOF_SNAPSHOT",
+                        "resourceId": self.reverified_snapshot_id,
+                    }
+                else:
+                    self.version += 1
+                    self.task_state = "DONE"
+                    self.run_state = "COMPLETED"
+                    self.snapshot_id = uid(50)
+                    operation["state"] = "SUCCEEDED"
+                    operation["result"] = {
+                        "resourceType": "PROJECT_TASK",
+                        "resourceId": uid(70),
+                        "proofSnapshotId": self.snapshot_id,
+                        "status": "PASS",
+                    }
+            return HttpResponse(200, operation)
+        if method == "POST" and target == f"/project-runs/{self.run_id}/publish":
+            self.version += 1
+            self.publication_state = "ACTIVE"
+            return HttpResponse(201, self._projection())
+        if method == "POST" and target == f"/project-runs/{self.run_id}/reverify":
+            operation_id = uid(self.next_operation)
+            self.next_operation += 1
+            self.operations[operation_id] = {
+                "id": operation_id,
+                "state": "PENDING",
+                "result": None,
+                "kind": "PROOF_REVERIFICATION",
+            }
+            return HttpResponse(202, {"id": operation_id, "kind": "PROOF_REVERIFICATION", "state": "PENDING"})
+        raise AssertionError((method, target))
+
+
+class RestartHttp(ProofHttp):
+    def __init__(self, run_id: str) -> None:
+        super().__init__(run_id)
+        self.snapshot_id = uid(50)
+        self.reverified_snapshot_id = uid(51)
+        self.publication_state = "ACTIVE"
+        self.task_state = "DONE"
+        self.run_state = "COMPLETED"
+        self.import_operation: str | None = None
+        self.import_polls = 0
+
+    def _response(self, method: str, target: str) -> HttpResponse:
+        if (method, target) == ("POST", "/career/target-imports"):
+            self.import_operation = uid(80)
+            self.operations[self.import_operation] = {"id": self.import_operation, "state": "RUNNING", "result": None}
+            return HttpResponse(202, {"id": self.import_operation})
+        if method == "GET" and self.import_operation and target == f"/workflow-operations/{self.import_operation}":
+            self.import_polls += 1
+            if self.import_polls < 2:
+                return HttpResponse(200, self.operations[self.import_operation])
+            self.operations[self.import_operation] = {
+                "id": self.import_operation,
+                "state": "SUCCEEDED",
+                "result": {"resourceType": "CAREER_TARGET_VERSION", "resourceId": uid(81)},
+            }
+            return HttpResponse(200, self.operations[self.import_operation])
+        return super()._response(method, target)
+
 
 class LocalAcceptanceTests(unittest.TestCase):
     def test_accepts_exact_local_real_source_matrix_and_uses_real_url(self) -> None:
@@ -230,6 +397,7 @@ class LocalAcceptanceTests(unittest.TestCase):
             receipts = list((infra / ".evidence").glob("*.json"))
             self.assertEqual(len(receipts), 1)
             receipt = json.loads(receipts[0].read_text())
+            self.assertEqual(receipt["receiptVersion"], 2)
             self.assertEqual(receipt["mode"], "ci-real-source")
             self.assertTrue(receipt["claims"]["realJobSource"])
             self.assertTrue(receipt["claims"]["fakeAi"])
@@ -326,6 +494,52 @@ class LocalAcceptanceTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "polling deadline"):
             acceptance.poll_operation(uid(40), timeout_seconds=1)
+
+    def test_task_verification_proof_lifecycle_records_redacted_receipt_fields(self) -> None:
+        run_id = uid(2)
+        http = ProofHttp(run_id)
+        acceptance = LocalAcceptance(
+            http, FakeCommands(), environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": run_id, "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"], ROOT,
+        )
+        acceptance.run_task_verification_proof()
+        self.assertEqual(acceptance.proof_run_label, "seed")
+        self.assertEqual(acceptance.proof_snapshot_id, uid(50))
+        self.assertEqual(acceptance.reverified_snapshot_id, uid(51))
+        self.assertEqual(acceptance.publication_state, "ACTIVE")
+        self.assertIn(("POST", f"/project-runs/{run_id}/tasks/{SEED_TASK_KEY}/verify", {}), http.calls)
+
+    def test_task_verification_proof_rejects_vacuous_evaluations(self) -> None:
+        class VacuousProofHttp(ProofHttp):
+            def _evaluations(self) -> list[dict[str, object]]:
+                return []
+
+        acceptance = LocalAcceptance(
+            VacuousProofHttp(uid(2)), FakeCommands(), environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"], ROOT,
+        )
+        with self.assertRaisesRegex(RuntimeError, "evaluate every configured evidence rule"):
+            acceptance.run_task_verification_proof()
+
+    def test_restart_retention_restarts_api_and_backend_without_worker_reclaim(self) -> None:
+        run_id = uid(2)
+        http = RestartHttp(run_id)
+        commands = FakeCommands()
+        acceptance = LocalAcceptance(
+            http, commands, environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": run_id, "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"], ROOT,
+        )
+        acceptance.proof_snapshot_id = uid(50)
+        acceptance.publication_state = "ACTIVE"
+        acceptance.run_restart_retention()
+        flattened = [" ".join(command) for command in commands.commands]
+        self.assertTrue(any(command.endswith(" stop api") for command in flattened))
+        self.assertTrue(any("stop api workflow-worker" in command for command in flattened))
+        self.assertFalse(any("docker kill --signal=KILL" in command for command in flattened))
+        self.assertIn(uid(81), acceptance.resource_ids)
 
     def test_shell_entrypoint_has_exact_optional_reset_guard_and_parses(self) -> None:
         script = ROOT / "deploy/local-acceptance.sh"
