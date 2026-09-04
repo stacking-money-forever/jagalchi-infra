@@ -249,10 +249,13 @@ class LocalAcceptance:
         if not env_file.is_file():
             raise AcceptanceError("browser gate requires JAGALCHI_ACCEPTANCE_ENV_FILE")
         try:
+            self.commands.run([*self.compose, "restart", "api"])
+            self.wait_for_health_ready(timeout_seconds=90)
             plan = build_plan(
                 repo_root=self.repo_root,
                 env_file=env_file,
                 seed=self.seed,
+                profile=self.profile,
             )
             self.browser_platform_revision = run_integrated(plan, read_env(env_file))
         except BrowserGateError as error:

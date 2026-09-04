@@ -180,6 +180,7 @@ def build_plan(
     seed: dict[str, Any],
     allow_dev_head: bool | None = None,
     require_seed: bool = True,
+    profile: str = "phase1",
 ) -> BrowserGatePlan:
     env = read_env(env_file)
     platform_source = Path(env.get("PLATFORM_SOURCE_DIR", ""))
@@ -197,6 +198,21 @@ def build_plan(
     if not test_script.is_file():
         raise BrowserGateError("platform no-MSW harness script is missing")
     web_dir = platform_source / "apps/web"
+    integrated_playwright_command = [
+        "pnpm",
+        "--dir",
+        str(web_dir),
+        "exec",
+        "playwright",
+        "test",
+        "--config",
+        "playwright.v1-local.config.ts",
+    ]
+    if profile == "phase2":
+        phase2_specs = manifest.get("phase2RequiredSpecs")
+        if not isinstance(phase2_specs, list) or not phase2_specs:
+            raise BrowserGateError("phase2 browser manifest is incomplete")
+        integrated_playwright_command.extend(str(spec) for spec in phase2_specs)
     return BrowserGatePlan(
         platform_source=platform_source,
         platform_revision=platform_revision,
@@ -206,16 +222,7 @@ def build_plan(
         playwright_env=playwright_env,
         standalone_command=[str(test_script), str(repo_root), str(env_file)],
         integrated_build_command=["pnpm", "--dir", str(web_dir), "build"],
-        integrated_playwright_command=[
-            "pnpm",
-            "--dir",
-            str(web_dir),
-            "exec",
-            "playwright",
-            "test",
-            "--config",
-            "playwright.v1-local.config.ts",
-        ],
+        integrated_playwright_command=integrated_playwright_command,
     )
 
 

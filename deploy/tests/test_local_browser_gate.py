@@ -96,6 +96,22 @@ class BrowserGateTests(unittest.TestCase):
             self.assertIn("playwright.v1-local.config.ts", plan.integrated_playwright_command)
             self.assertEqual(plan.playwright_env["JAGALCHI_E2E_SEED_RUN_ID"], uid(2))
 
+    def test_build_plan_phase2_limits_playwright_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="phase2",
+            )
+            joined = " ".join(plan.integrated_playwright_command)
+            self.assertIn("phase-two-map-focus-proof.spec.ts", joined)
+            self.assertNotIn("phase-one-entry.spec.ts", joined)
+
     def test_missing_manifest_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
