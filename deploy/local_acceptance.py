@@ -169,6 +169,7 @@ class LocalAcceptance:
         *,
         repo_root: Path | None = None,
         reset_performed: bool = False,
+        profile: str = "phase1",
         monotonic=time.monotonic,
         sleep=time.sleep,
     ) -> None:
@@ -190,6 +191,8 @@ class LocalAcceptance:
         self.proof_snapshot_id: str | None = None
         self.reverified_snapshot_id: str | None = None
         self.publication_state: str | None = None
+        self.browser_platform_revision: str | None = None
+        self.profile = profile
 
     def run(self) -> None:
         self.validate_environment()
@@ -197,10 +200,15 @@ class LocalAcceptance:
         self.run_fixture_path()
         self.run_upload_lifecycle()
         self.run_worker_recovery()
+        if self.profile == "phase2":
+            self.run_no_msw_browser()
         self.run_task_verification_proof()
         self.run_restart_retention()
         self.write_receipt()
-        print(f"local acceptance: OK mode={self.env['JAGALCHI_LOCAL_MODE']} namespace={self.namespace}")
+        print(
+            f"local acceptance: OK mode={self.env['JAGALCHI_LOCAL_MODE']} "
+            f"profile={self.profile} namespace={self.namespace}"
+        )
 
     def validate_environment(self) -> None:
         required = [
@@ -231,6 +239,24 @@ class LocalAcceptance:
             raise AcceptanceError("seed schemaVersion must be 1")
         if self.repo_root is not None:
             self.contract_hashes()
+
+    def run_no_msw_browser(self) -> None:
+        if self.repo_root is None:
+            raise AcceptanceError("browser gate requires the infra repository root")
+        from deploy.local_browser_gate import BrowserGateError, build_plan, read_env, run_integrated
+
+        env_file = Path(os.environ.get("JAGALCHI_ACCEPTANCE_ENV_FILE", ""))
+        if not env_file.is_file():
+            raise AcceptanceError("browser gate requires JAGALCHI_ACCEPTANCE_ENV_FILE")
+        try:
+            plan = build_plan(
+                repo_root=self.repo_root,
+                env_file=env_file,
+                seed=self.seed,
+            )
+            self.browser_platform_revision = run_integrated(plan, read_env(env_file))
+        except BrowserGateError as error:
+            raise AcceptanceError(str(error)) from error
 
     def login_and_verify_seed(self) -> None:
         response = self.http.request(
@@ -272,9 +298,24 @@ class LocalAcceptance:
             and not matrix["externalDisabled"]
             and not matrix["llmDisabled"]
         )
+        passed_gates = [
+            "environment",
+            "seeded-resources",
+            "target-import",
+            "profile-confirm",
+            "diff-confirm",
+            "three-proposals",
+            "valid-project-plan",
+            "upload-lifecycle",
+            "worker-expired-lease-recovery",
+        ]
+        if self.profile == "phase2":
+            passed_gates.append("no-msw-browser")
+        passed_gates.extend(["task-verification-proof", "restart-retention"])
         receipt: dict[str, Any] = {
             "receiptVersion": 2,
             "mode": mode,
+            "profile": self.profile,
             "startedAt": self.started_at,
             "completedAt": completed_at,
             "resetPerformed": self.reset_performed,
@@ -286,24 +327,14 @@ class LocalAcceptance:
                 "fakeAi": matrix["apiAi"] == "fixture" and matrix["aiRuntime"] == "fake",
             },
             "contractHashes": self.contract_hashes(),
-            "passedGates": [
-                "environment",
-                "seeded-resources",
-                "target-import",
-                "profile-confirm",
-                "diff-confirm",
-                "three-proposals",
-                "valid-project-plan",
-                "upload-lifecycle",
-                "worker-expired-lease-recovery",
-                "task-verification-proof",
-                "restart-retention",
-            ],
+            "passedGates": passed_gates,
             "proofRunId": self.proof_run_label,
             "proofSnapshotId": self.proof_snapshot_id,
             "reverifiedSnapshotId": self.reverified_snapshot_id,
             "publicationState": self.publication_state,
         }
+        if self.browser_platform_revision is not None:
+            receipt["browserPlatformRevision"] = self.browser_platform_revision
         evidence_dir = self.repo_root / ".evidence"
         evidence_dir.mkdir(mode=0o700, exist_ok=True)
         os.chmod(evidence_dir, 0o700)
@@ -785,7 +816,11 @@ def main() -> None:
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--seed-receipt", required=True)
     parser.add_argument("--reset-performed", action="store_true")
+    parser.add_argument("--profile", default=os.environ.get("JAGALCHI_ACCEPTANCE_PROFILE", "phase1"))
     args = parser.parse_args()
+    if args.profile not in {"phase1", "phase2"}:
+        raise AcceptanceError(f"unsupported acceptance profile: {args.profile}")
+    os.environ["JAGALCHI_ACCEPTANCE_ENV_FILE"] = str(args.env)
     env = read_env(args.env)
     seed = json.loads(args.seed_receipt)
     lock = json.loads((args.repo_root / "deploy/local-stack.lock.json").read_text())
@@ -812,6 +847,7 @@ def main() -> None:
         Path(env.get("API_SOURCE_DIR", "")),
         repo_root=args.repo_root,
         reset_performed=args.reset_performed,
+        profile=args.profile,
     )
     acceptance.run()
 

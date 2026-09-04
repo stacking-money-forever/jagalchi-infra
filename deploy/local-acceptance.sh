@@ -2,10 +2,42 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-env_file="${1:-}"
-reset="${2:-}"
-[[ -n "$env_file" && ( -z "$reset" || "$reset" == "--reset" ) && $# -le 2 ]] || {
-  echo "usage: $0 /absolute/path/to/local.env [--reset]" >&2
+env_file=""
+reset=""
+profile="${JAGALCHI_ACCEPTANCE_PROFILE:-phase1}"
+extra_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset)
+      reset="--reset"
+      shift
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    --profile=*)
+      profile="${1#--profile=}"
+      shift
+      ;;
+    *)
+      if [[ -z "$env_file" ]]; then
+        env_file="$1"
+      elif [[ -z "$reset" && "$1" == "--reset" ]]; then
+        reset="--reset"
+      else
+        extra_args+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+[[ -n "$env_file" && "$env_file" == /* && -f "$env_file" && ${#extra_args[@]} -eq 0 ]] || {
+  echo "usage: $0 /absolute/path/to/local.env [--reset] [--profile phase1|phase2]" >&2
+  exit 2
+}
+[[ "$profile" == "phase1" || "$profile" == "phase2" ]] || {
+  echo "unsupported acceptance profile: $profile" >&2
   exit 2
 }
 [[ "$env_file" == /* && -f "$env_file" ]] || { echo "local acceptance requires an absolute env file" >&2; exit 2; }
@@ -29,4 +61,5 @@ python3 "$repo_root/deploy/local_acceptance.py" \
   --env "$env_file" \
   --repo-root "$repo_root" \
   --seed-receipt "$seed_receipt" \
+  --profile "$profile" \
   "${receipt_arguments[@]}"

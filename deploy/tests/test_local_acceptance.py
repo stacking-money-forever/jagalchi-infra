@@ -549,6 +549,8 @@ class LocalAcceptanceTests(unittest.TestCase):
         self.assertIn('"--confirm=$project_name"', source)
         self.assertIn("--reset-performed", source)
         self.assertNotIn("local-reset.sh --confirm", source)
+        self.assertIn("--profile", source)
+        self.assertTrue((ROOT / "deploy/local-browser-gate.sh").is_file())
 
 
 if __name__ == "__main__":
