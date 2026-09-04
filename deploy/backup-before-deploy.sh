@@ -105,14 +105,19 @@ else
   echo "object_storage=volume_not_found" >> "$backup_dir/manifest.txt"
 fi
 
-docker image inspect jagalchi-personal-api:production jagalchi-personal-ai:production \
-  --format '{{.RepoTags}} {{.Id}}' > "$backup_dir/previous-images.txt" 2>/dev/null || true
+api_image="$(env_value API_IMAGE)"
+ai_image="$(env_value AI_IMAGE)"
+if [[ -n "$api_image" && -n "$ai_image" ]]; then
+  printf 'API_IMAGE=%s\nAI_IMAGE=%s\n' "$api_image" "$ai_image" >> "$backup_dir/manifest.txt"
+  docker image inspect "$api_image" "$ai_image" \
+    --format '{{.RepoTags}} {{.Id}}' > "$backup_dir/previous-images.txt" 2>/dev/null || true
+fi
 
 api_id="$("${compose[@]}" ps -q api 2>/dev/null || true)"
 ai_id="$("${compose[@]}" ps -q ai 2>/dev/null || true)"
 if [[ -n "$api_id" && -n "$ai_id" ]]; then
-  rollback_api="jagalchi-personal-api:rollback-$timestamp"
-  rollback_ai="jagalchi-personal-ai:rollback-$timestamp"
+  rollback_api="jagalchi-rollback/api:$timestamp"
+  rollback_ai="jagalchi-rollback/ai:$timestamp"
   docker tag "$(docker inspect --format '{{.Image}}' "$api_id")" "$rollback_api"
   docker tag "$(docker inspect --format '{{.Image}}' "$ai_id")" "$rollback_ai"
   printf 'API_IMAGE=%s\nAI_IMAGE=%s\n' "$rollback_api" "$rollback_ai" > "$backup_dir/rollback.env"

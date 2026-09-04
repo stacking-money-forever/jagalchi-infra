@@ -149,6 +149,13 @@ class ProductionContractTest(unittest.TestCase):
         self.assertIn("AI_IMAGE", readme)
         self.assertNotIn("/srv/jagalchi-platform", readme)
 
+    def test_backup_script_records_ghcr_image_pins(self) -> None:
+        backup = (DEPLOY / "backup-before-deploy.sh").read_text(encoding="utf-8")
+        self.assertIn('env_value API_IMAGE', backup)
+        self.assertIn('env_value AI_IMAGE', backup)
+        self.assertIn("jagalchi-rollback/api:", backup)
+        self.assertNotIn("jagalchi-personal-api:production", backup)
+
     def test_ghcr_example_tags_match_preflight_regex(self) -> None:
         env = ENV_EXAMPLE.read_text(encoding="utf-8")
         for line in env.splitlines():
