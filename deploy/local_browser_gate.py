@@ -9,6 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 
@@ -272,19 +273,54 @@ def run_command(
     )
 
 
-def run_integrated(plan: BrowserGatePlan, env: dict[str, str]) -> str:
+PLAYWRIGHT_SPEC_OFFSET = 8
+
+
+def playwright_specs(command: list[str]) -> list[str]:
+    return command[PLAYWRIGHT_SPEC_OFFSET:]
+
+
+def playwright_command_for_specs(command: list[str], specs: list[str]) -> list[str]:
+    return command[:PLAYWRIGHT_SPEC_OFFSET] + specs
+
+
+def integrated_playwright_commands(
+    plan: BrowserGatePlan,
+    *,
+    between_spec_runs: Callable[[], None] | None = None,
+) -> list[list[str]]:
+    base = plan.integrated_playwright_command
+    specs = playwright_specs(base)
+    if not specs:
+        return [base]
+    if between_spec_runs is not None and len(specs) > 1:
+        return [playwright_command_for_specs(base, [spec]) for spec in specs]
+    return [base]
+
+
+def run_integrated(
+    plan: BrowserGatePlan,
+    env: dict[str, str],
+    *,
+    between_spec_runs: Callable[[], None] | None = None,
+) -> str:
     build = run_command(plan.integrated_build_command, env=plan.playwright_env)
     if build.returncode != 0:
         detail = redact_output((build.stdout or "") + (build.stderr or ""), env)
         raise BrowserGateError(f"browser gate web build failed: {detail[-500:]}")
-    playwright = run_command(
-        plan.integrated_playwright_command,
-        env=plan.playwright_env,
-        cwd=plan.platform_source / "apps/web",
-    )
-    if playwright.returncode != 0:
-        detail = redact_output((playwright.stdout or "") + (playwright.stderr or ""), env)
-        raise BrowserGateError(f"browser gate playwright failed: {detail[-500:]}")
+    for index, command in enumerate(
+        integrated_playwright_commands(plan, between_spec_runs=between_spec_runs)
+    ):
+        if index > 0 and between_spec_runs is not None:
+            between_spec_runs()
+        playwright = run_command(
+            command,
+            env=plan.playwright_env,
+            cwd=plan.platform_source / "apps/web",
+        )
+        if playwright.returncode != 0:
+            detail = redact_output((playwright.stdout or "") + (playwright.stderr or ""), env)
+            raise BrowserGateError(f"browser gate playwright failed: {detail[-500:]}")
     return plan.platform_revision
 
 

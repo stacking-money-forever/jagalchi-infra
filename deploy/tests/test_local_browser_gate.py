@@ -11,6 +11,7 @@ from deploy.local_browser_gate import (
     BrowserGateError,
     browser_gate_env,
     build_plan,
+    integrated_playwright_commands,
     redact_output,
     run_integrated,
     run_standalone,
@@ -333,6 +334,49 @@ class BrowserGateTests(unittest.TestCase):
             with mock.patch("deploy.local_browser_gate.run_command", side_effect=fake_run):
                 with self.assertRaisesRegex(BrowserGateError, "harness failed"):
                     run_standalone(plan, env)
+
+
+    def test_integrated_playwright_commands_split_phase2_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="phase2",
+            )
+            commands = integrated_playwright_commands(plan, between_spec_runs=lambda: None)
+            self.assertEqual(len(commands), 2)
+            self.assertIn("phase-two-map-focus-proof.spec.ts", commands[0][-1])
+            self.assertIn("phase-two-wave-b-entry.spec.ts", commands[1][-1])
+
+    def test_run_integrated_phase2_invokes_between_spec_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="phase2",
+            )
+            between_calls: list[str] = []
+
+            def fake_run(command, *, env, cwd=None):
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch("deploy.local_browser_gate.run_command", side_effect=fake_run):
+                run_integrated(
+                    plan,
+                    {},
+                    between_spec_runs=lambda: between_calls.append("reset"),
+                )
+            self.assertEqual(between_calls, ["reset"])
 
     def test_run_integrated_success_returns_revision(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

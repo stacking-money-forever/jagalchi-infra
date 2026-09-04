@@ -257,7 +257,16 @@ class LocalAcceptance:
                 seed=self.seed,
                 profile=self.profile,
             )
-            self.browser_platform_revision = run_integrated(plan, read_env(env_file))
+            def reset_login_rate_limit() -> None:
+                self.commands.run([*self.compose, "restart", "api"])
+                self.wait_for_health_ready(timeout_seconds=90)
+
+            between_spec_runs = reset_login_rate_limit if self.profile == "phase2" else None
+            self.browser_platform_revision = run_integrated(
+                plan,
+                read_env(env_file),
+                between_spec_runs=between_spec_runs,
+            )
         except BrowserGateError as error:
             raise AcceptanceError(str(error)) from error
 

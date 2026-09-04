@@ -574,8 +574,10 @@ class LocalAcceptanceTests(unittest.TestCase):
             events.append("build_plan")
             return object()
 
-        def fake_run_integrated(_plan, _env):
+        def fake_run_integrated(_plan, _env, *, between_spec_runs=None):
             events.append("run_integrated")
+            if between_spec_runs is not None:
+                events.append("between_spec_runs=callable")
             return "b" * 40
 
         def fake_read_env(_path):
