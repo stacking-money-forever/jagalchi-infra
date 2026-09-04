@@ -11,4 +11,7 @@ if [[ "$confirmation" != "--confirm=$project_name" ]]; then
   exit 2
 fi
 docker compose -p "$project_name" --env-file "$env_file" -f "$compose_file" down --volumes --remove-orphans
+python3 "$repo_root/deploy/local_stack_reset.py" purge-stale \
+  --repo-root "$repo_root" \
+  --env-file "$env_file"
 echo "removed only jagalchi-v1-local containers and named project volumes"
