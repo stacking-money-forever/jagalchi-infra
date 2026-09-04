@@ -97,16 +97,20 @@ class FakeHttp:
 
 
 class FakeCommands:
-    def __init__(self, recovery_http=None) -> None:
+    def __init__(self, recovery_http=None, *, fail: bool = False, outputs: list[str] | None = None) -> None:
         self.commands: list[list[str]] = []
         self.recovery_http = recovery_http
+        self.fail = fail
+        self.outputs = list(outputs or [])
 
     def run(self, command, *, check=True):
         self.commands.append(command)
+        if self.fail:
+            raise subprocess.CalledProcessError(1, command)
         if self.recovery_http and "up" in command and "workflow-worker" in command:
             self.recovery_http.restarted = True
-        return subprocess.CompletedProcess(command, 0, "", "")
-
+        stdout = self.outputs.pop(0) if self.outputs else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
 
 class FakeClock:
     def __init__(self) -> None:
@@ -198,6 +202,9 @@ def contract_tree(root: Path, mode: str) -> tuple[Path, Path, Path, dict[str, st
 
 class ReceiptAcceptance(LocalAcceptance):
     def login_and_verify_seed(self) -> None:
+        return None
+
+    def wait_for_post_seed_workflow_readiness(self, timeout_seconds: int = 60) -> None:
         return None
 
     def run_fixture_path(self) -> None:
@@ -649,6 +656,41 @@ class LocalAcceptanceTests(unittest.TestCase):
         self.assertLess(health_index, build_index)
         self.assertLess(build_index, playwright_index)
 
+
+    def test_run_order_places_post_seed_readiness_before_fixture_path(self) -> None:
+        source = (ROOT / "deploy/local_acceptance.py").read_text(encoding="utf-8")
+        seed_index = source.index("self.login_and_verify_seed()")
+        readiness_index = source.index("self.wait_for_post_seed_workflow_readiness()")
+        fixture_index = source.index("self.run_fixture_path()")
+        self.assertLess(seed_index, readiness_index)
+        self.assertLess(readiness_index, fixture_index)
+
+    def test_post_seed_readiness_wraps_readiness_error(self) -> None:
+        class ReadyHttp(FakeHttp):
+            def _response(self, method: str, target: str, body: object) -> HttpResponse:
+                if (method, target) == ("GET", "/health/ready"):
+                    return HttpResponse(200, {"status": "ready"})
+                return super()._response(method, target, body)
+
+        class FailingWorkerCommands(FakeCommands):
+            def run(self, command, *, check=True):
+                if any("health-check.js" in part for part in command):
+                    raise subprocess.CalledProcessError(1, command)
+                return super().run(command, check=check)
+
+        clock = FakeClock()
+        acceptance = LocalAcceptance(
+            ReadyHttp(),
+            FailingWorkerCommands(),
+            environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"],
+            ROOT,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+        with self.assertRaisesRegex(RuntimeError, "workflow worker health-check.js failed"):
+            acceptance.wait_for_post_seed_workflow_readiness(timeout_seconds=1)
 
 if __name__ == "__main__":
     unittest.main()

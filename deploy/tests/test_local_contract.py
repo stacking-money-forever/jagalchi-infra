@@ -288,6 +288,12 @@ class LocalStackContractTest(unittest.TestCase):
         for spec in manifest["phase2RequiredSpecs"]:
             self.assertTrue(spec.startswith("e2e-v1-local/"), spec)
             self.assertFalse(spec.startswith("apps/web/"), spec)
+    def test_local_smoke_retries_health_endpoints(self) -> None:
+        script = (ROOT / "deploy/local-smoke.sh").read_text(encoding="utf-8")
+        self.assertIn("retry_curl", script)
+        self.assertIn("retry_compose_exec", script)
+        self.assertIn("/api/health/ready", script)
+
 
 if __name__ == "__main__":
     unittest.main()

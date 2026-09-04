@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -15,6 +16,10 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+_DEPLOY_ROOT = Path(__file__).resolve().parent
+if str(_DEPLOY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_DEPLOY_ROOT))
 
 
 UUID_RE = re.compile(
@@ -197,6 +202,7 @@ class LocalAcceptance:
     def run(self) -> None:
         self.validate_environment()
         self.login_and_verify_seed()
+        self.wait_for_post_seed_workflow_readiness()
         self.run_fixture_path()
         self.run_upload_lifecycle()
         self.run_worker_recovery()
@@ -620,6 +626,22 @@ class LocalAcceptance:
                 pass
             self.sleep(1.0)
         raise AcceptanceError("API readiness did not recover after restart")
+
+    def wait_for_post_seed_workflow_readiness(self, timeout_seconds: int = 60) -> None:
+        from local_readiness import ReadinessError, wait_for_post_seed_workflow_readiness
+
+        try:
+            wait_for_post_seed_workflow_readiness(
+                self.http,
+                self.commands,
+                self.compose,
+                self.env,
+                monotonic=self.monotonic,
+                sleep=self.sleep,
+                timeout_seconds=timeout_seconds,
+            )
+        except ReadinessError as error:
+            raise AcceptanceError(str(error)) from error
 
     def run_task_verification_proof(self) -> None:
         run_id = self.seed["projectRunId"]
