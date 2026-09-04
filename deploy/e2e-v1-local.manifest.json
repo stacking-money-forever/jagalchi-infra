@@ -5,10 +5,12 @@
     "apps/web/e2e-v1-local/helpers.ts",
     "apps/web/e2e-v1-local/phase-one-entry.spec.ts",
     "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+    "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts",
     "apps/web/playwright.v1-local.config.ts",
     "scripts/test-v1-local-e2e.sh"
   ],
   "phase2RequiredSpecs": [
-    "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts"
+    "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+    "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts"
   ]
 }

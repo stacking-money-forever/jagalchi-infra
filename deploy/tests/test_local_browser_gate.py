@@ -44,6 +44,7 @@ class BrowserGateTests(unittest.TestCase):
             "apps/web/e2e-v1-local/helpers.ts",
             "apps/web/e2e-v1-local/phase-one-entry.spec.ts",
             "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+            "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts",
             "apps/web/playwright.v1-local.config.ts",
             "scripts/test-v1-local-e2e.sh",
         ]
@@ -111,14 +112,26 @@ class BrowserGateTests(unittest.TestCase):
             )
             joined = " ".join(plan.integrated_playwright_command)
             self.assertIn("e2e-v1-local/phase-two-map-focus-proof.spec.ts", joined)
+            self.assertIn("e2e-v1-local/phase-two-wave-b-entry.spec.ts", joined)
             self.assertNotIn("apps/web/", joined)
-            for argument in plan.integrated_playwright_command:
-                if argument.endswith(".spec.ts"):
-                    self.assertFalse(argument.startswith("apps/web/"), argument)
-                    self.assertTrue(
-                        argument.startswith("e2e-v1-local/"),
-                        f"expected web-relative spec path, got {argument!r}",
-                    )
+            spec_paths = [
+                argument
+                for argument in plan.integrated_playwright_command
+                if argument.endswith(".spec.ts")
+            ]
+            self.assertEqual(
+                spec_paths,
+                [
+                    "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+                    "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+                ],
+            )
+            for argument in spec_paths:
+                self.assertFalse(argument.startswith("apps/web/"), argument)
+                self.assertTrue(
+                    argument.startswith("e2e-v1-local/"),
+                    f"expected web-relative spec path, got {argument!r}",
+                )
 
     def test_build_plan_phase1_does_not_scope_phase2_specs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -196,7 +209,15 @@ class BrowserGateTests(unittest.TestCase):
             with self.assertRaisesRegex(BrowserGateError, "manifest is missing"):
                 build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
 
-    def test_missing_phase2_spec_fails_closed(self) -> None:
+    def test_manifest_requires_both_phase2_specs(self) -> None:
+        manifest = json.loads((ROOT / "deploy/e2e-v1-local.manifest.json").read_text(encoding="utf-8"))
+        map_focus = "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts"
+        wave_b = "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts"
+        self.assertIn(map_focus, manifest["requiredFiles"])
+        self.assertIn(wave_b, manifest["requiredFiles"])
+        self.assertEqual(manifest["phase2RequiredSpecs"], [map_focus, wave_b])
+
+    def test_missing_phase2_map_focus_spec_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             platform, _ = self._platform_tree(root)
@@ -204,6 +225,50 @@ class BrowserGateTests(unittest.TestCase):
             env_file = self._env_file(root, platform)
             with self.assertRaisesRegex(BrowserGateError, "phase 2 browser spec is missing"):
                 build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
+
+    def test_missing_phase2_wave_b_entry_spec_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            (platform / "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts").unlink()
+            env_file = self._env_file(root, platform)
+            with self.assertRaisesRegex(BrowserGateError, "phase 2 browser spec is missing"):
+                build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
+
+    def test_missing_required_wave_b_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            wave_b = platform / "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts"
+            wave_b.unlink()
+            manifest_path = root / "infra" / "deploy/e2e-v1-local.manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["phase2RequiredSpecs"] = [
+                "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts",
+            ]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            env_file = self._env_file(root, platform)
+            with self.assertRaisesRegex(BrowserGateError, "platform inventory is incomplete"):
+                build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
+
+    def test_build_plan_default_profile_does_not_scope_phase2_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+            )
+            joined = " ".join(plan.integrated_playwright_command)
+            self.assertNotIn("phase-two-map-focus-proof.spec.ts", joined)
+            self.assertNotIn("phase-two-wave-b-entry.spec.ts", joined)
+            self.assertEqual(
+                plan.integrated_playwright_command[-1],
+                "playwright.v1-local.config.ts",
+            )
 
     def test_wrong_revision_without_dev_head_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
