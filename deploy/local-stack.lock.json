@@ -35,7 +35,7 @@
  "providers": {
   "deepseekBaseUrl": "https://api.deepseek.com",
   "extractionModel": "deepseek-v4-flash",
-  "planningModel": "deepseek-v4-flash",
+  "planningModel": "deepseek-v4-pro",
   "modes": {
    "ci": [
     "fixture",
