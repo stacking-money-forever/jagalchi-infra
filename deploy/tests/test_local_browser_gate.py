@@ -166,6 +166,88 @@ class BrowserGateTests(unittest.TestCase):
         self.assertEqual(env["NEXT_PUBLIC_API_URL"], "/api")
         self.assertEqual(env["API_ORIGIN"], "http://127.0.0.1:8080")
 
+    def test_browser_gate_env_phase2_includes_project_runs_build_flags(self) -> None:
+        env = browser_gate_env(
+            {
+                "LOCAL_SEED_EMAIL": "local@example.test",
+                "LOCAL_SEED_PASSWORD": "super-secret-password",
+            },
+            seed(),
+            profile="phase2",
+        )
+        self.assertEqual(env["NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED"], "true")
+        self.assertEqual(env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "true")
+
+    def test_browser_gate_env_phase1_omits_project_runs_flag(self) -> None:
+        env = browser_gate_env(
+            {
+                "LOCAL_SEED_EMAIL": "local@example.test",
+                "LOCAL_SEED_PASSWORD": "super-secret-password",
+            },
+            seed(),
+            profile="phase1",
+        )
+        self.assertEqual(env["NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED"], "true")
+        self.assertNotIn("NEXT_PUBLIC_PROJECT_RUNS_ENABLED", env)
+
+    def test_run_integrated_phase2_build_env_includes_project_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="phase2",
+            )
+            captured: list[dict[str, str]] = []
+
+            def fake_run(command, *, env, cwd=None):
+                if command[0] == "pnpm" and command[-1] == "build":
+                    captured.append(dict(env))
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch("deploy.local_browser_gate.run_command", side_effect=fake_run):
+                run_integrated(
+                    plan,
+                    {"LOCAL_SEED_PASSWORD": "super-secret-password"},
+                    between_spec_runs=lambda: None,
+                )
+
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED"], "true")
+            self.assertEqual(captured[0]["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "true")
+
+    def test_run_integrated_phase1_build_env_omits_project_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="phase1",
+            )
+            captured: list[dict[str, str]] = []
+
+            def fake_run(command, *, env, cwd=None):
+                if command[0] == "pnpm" and command[-1] == "build":
+                    captured.append(dict(env))
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch("deploy.local_browser_gate.run_command", side_effect=fake_run):
+                run_integrated(plan, {"LOCAL_SEED_PASSWORD": "super-secret-password"})
+
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED"], "true")
+            self.assertNotIn("NEXT_PUBLIC_PROJECT_RUNS_ENABLED", captured[0])
+
     def test_build_plan_keeps_standalone_no_msw_harness(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

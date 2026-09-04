@@ -160,6 +160,8 @@ def require_seed_uuid(seed: dict[str, Any], key: str) -> str:
 def browser_gate_env(
     env: dict[str, str],
     seed: dict[str, Any],
+    *,
+    profile: str = "phase1",
 ) -> dict[str, str]:
     user_id = require_seed_uuid(seed, "userId")
     project_run_id = require_seed_uuid(seed, "projectRunId")
@@ -168,7 +170,7 @@ def browser_gate_env(
     password = env.get("LOCAL_SEED_PASSWORD", "")
     if not email or not password:
         raise BrowserGateError("LOCAL_SEED_EMAIL and LOCAL_SEED_PASSWORD are required")
-    return {
+    playwright_env = {
         "E2E_TEST_EMAIL": email,
         "E2E_TEST_PASSWORD": password,
         "E2E_SEED_USER_ID": user_id,
@@ -187,6 +189,10 @@ def browser_gate_env(
         "NEXT_PUBLIC_PROOF_PROFILE_ENABLED": "true",
         "NEXT_PUBLIC_SITE_URL": "http://127.0.0.1:3100",
     }
+    if profile == "phase2":
+        # Wave B entry routes compile to notFound() unless both flags are baked into `pnpm build`.
+        playwright_env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"] = "true"
+    return playwright_env
 
 
 def redact_output(text: str, env: dict[str, str]) -> str:
@@ -220,7 +226,7 @@ def build_plan(
     if allow_dev_head is None:
         allow_dev_head = os.environ.get("JAGALCHI_DEV_HEAD", "") == "true"
     platform_revision = validate_platform_revision(platform_source, lock, allow_dev_head=allow_dev_head)
-    playwright_env = browser_gate_env(env, seed) if require_seed else {}
+    playwright_env = browser_gate_env(env, seed, profile=profile) if require_seed else {}
     test_script = platform_source / "scripts/test-v1-local-e2e.sh"
     if not test_script.is_file():
         raise BrowserGateError("platform no-MSW harness script is missing")
