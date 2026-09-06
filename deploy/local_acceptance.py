@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,12 @@ ACCEPTANCE_ENV_OVERRIDE_KEYS = (
     "AI_V1_PROVIDER",
     "AI_DISABLE_EXTERNAL",
     "AI_DISABLE_LLM",
+)
+PHASE2_VISUAL_EVIDENCE_FILES = tuple(
+    f"phase2-{viewport}-{theme}-{surface}.png"
+    for viewport in ("1440", "390")
+    for theme in ("light", "dark")
+    for surface in ("proof", "myroadmap")
 )
 AI_ACCESS_LOG_RE = re.compile(
     r'"POST\s+(?P<path>/(?:ai/)?internal/v1/[^ ]+)\s+HTTP/\d(?:\.\d)?"\s+(?P<status>\d{3})\b'
@@ -352,8 +359,31 @@ class LocalAcceptance:
                 read_env(env_file),
                 between_spec_runs=None,
             )
+            self.preserve_phase2_visual_evidence(plan.platform_source)
         except BrowserGateError as error:
             raise AcceptanceError(str(error)) from error
+
+    def preserve_phase2_visual_evidence(self, platform_source: Path) -> None:
+        if self.repo_root is None:
+            raise AcceptanceError("visual evidence requires the infra repository root")
+        source_dir = platform_source / "apps/web/test-results"
+        missing = [name for name in PHASE2_VISUAL_EVIDENCE_FILES if not (source_dir / name).is_file()]
+        if missing:
+            raise AcceptanceError(f"phase2 visual evidence is incomplete: {', '.join(missing)}")
+        evidence_dir = self.repo_root / ".evidence" / f"phase2-visuals-{self.namespace}"
+        evidence_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+        records: list[dict[str, str]] = []
+        for name in PHASE2_VISUAL_EVIDENCE_FILES:
+            destination = evidence_dir / name
+            shutil.copy2(source_dir / name, destination)
+            os.chmod(destination, 0o600)
+            records.append(
+                {
+                    "path": str(destination.relative_to(self.repo_root)),
+                    "sha256": file_sha256(destination),
+                }
+            )
+        self.phase2_visual_evidence = records
 
     def run_rollback_browser(self) -> None:
         if self.repo_root is None:
@@ -432,6 +462,10 @@ class LocalAcceptance:
             dict,
         ):
             raise AcceptanceError("phase2 receipt requires synthetic canary evidence")
+        if self.profile == "phase2" and len(
+            getattr(self, "phase2_visual_evidence", [])
+        ) != len(PHASE2_VISUAL_EVIDENCE_FILES):
+            raise AcceptanceError("phase2 receipt requires complete light/dark visual evidence")
         completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         mode = self.env["JAGALCHI_LOCAL_MODE"]
         matrix = {
@@ -468,6 +502,7 @@ class LocalAcceptance:
                     "no-msw-browser-full-journey",
                     "rollback-flags-off",
                     "project-runs-only-rollback",
+                    "light-dark-visual-evidence",
                     "synthetic-canary-non-disclosure",
                 ]
             )
@@ -507,6 +542,7 @@ class LocalAcceptance:
                 ),
             }
             receipt["nonDisclosure"] = getattr(self, "synthetic_canary_evidence", None)
+            receipt["visualEvidence"] = getattr(self, "phase2_visual_evidence", [])
         if self.synthetic_canary in json.dumps(receipt, sort_keys=True):
             raise AcceptanceError("synthetic canary leaked into acceptance receipt")
         evidence_dir = self.repo_root / ".evidence"

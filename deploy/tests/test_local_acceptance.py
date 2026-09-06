@@ -16,6 +16,7 @@ from deploy.local_acceptance import (
     AI_ROUTE_PATHS,
     HttpResponse,
     LocalAcceptance,
+    PHASE2_VISUAL_EVIDENCE_FILES,
     SEED_EVIDENCE_RULES,
     SEED_TASK_KEY,
     effective_environment,
@@ -778,7 +779,7 @@ class LocalAcceptanceTests(unittest.TestCase):
 
         def fake_build_plan(**_kwargs):
             events.append("build_plan")
-            return types.SimpleNamespace(playwright_env={})
+            return types.SimpleNamespace(playwright_env={}, platform_source=ROOT)
 
         def fake_run_integrated(_plan, _env, *, between_spec_runs=None):
             events.append("run_integrated")
@@ -802,6 +803,9 @@ class LocalAcceptanceTests(unittest.TestCase):
         class BrowserAcceptance(LocalAcceptance):
             def wait_for_health_ready(self, timeout_seconds: int = 60) -> None:
                 events.append(f"wait_for_health_ready:{timeout_seconds}")
+
+            def preserve_phase2_visual_evidence(self, _platform_source: Path) -> None:
+                events.append("preserve_phase2_visual_evidence")
 
         env_file = ROOT / "deploy/tests/.browser-gate-order.env"
         previous = os.environ.get("JAGALCHI_ACCEPTANCE_ENV_FILE")
@@ -854,6 +858,28 @@ class LocalAcceptanceTests(unittest.TestCase):
         self.assertLess(restart_index, health_index)
         self.assertLess(health_index, build_index)
         self.assertLess(build_index, playwright_index)
+        self.assertGreater(events.index("preserve_phase2_visual_evidence"), playwright_index)
+
+    def test_preserves_all_light_dark_visual_evidence_outside_playwright_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform = root / "platform"
+            source = platform / "apps/web/test-results"
+            source.mkdir(parents=True)
+            for index, name in enumerate(PHASE2_VISUAL_EVIDENCE_FILES):
+                (source / name).write_bytes(f"png-{index}".encode())
+            acceptance = LocalAcceptance(
+                FakeHttp(), FakeCommands(), environment(ROOT),
+                {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+                ["docker", "compose"], ROOT, repo_root=root, profile="phase2",
+            )
+            acceptance.preserve_phase2_visual_evidence(platform)
+            self.assertEqual(len(acceptance.phase2_visual_evidence), 8)
+            for record in acceptance.phase2_visual_evidence:
+                preserved = root / record["path"]
+                self.assertTrue(preserved.is_file())
+                self.assertEqual(record["sha256"], hashlib.sha256(preserved.read_bytes()).hexdigest())
+                self.assertEqual(os.stat(preserved).st_mode & 0o777, 0o600)
 
 
     def test_run_order_places_post_seed_readiness_before_fixture_path(self) -> None:
