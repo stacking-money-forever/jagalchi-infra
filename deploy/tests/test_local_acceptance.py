@@ -12,10 +12,13 @@ from pathlib import Path
 from unittest import mock
 
 from deploy.local_acceptance import (
+    AcceptanceError,
+    AI_ROUTE_PATHS,
     HttpResponse,
     LocalAcceptance,
     SEED_EVIDENCE_RULES,
     SEED_TASK_KEY,
+    effective_environment,
 )
 
 
@@ -77,7 +80,20 @@ class FakeHttp:
             return self._new_operation("PROJECT_RUN", uid(14))
         if (method, target) == ("GET", f"/project-runs/{uid(14)}"):
             task = {"id": "task-1"}
-            return HttpResponse(200, {"id": uid(14), "plan": {"schemaVersion": 1}, "tasks": [task], "map": {"nodes": [task]}})
+            return HttpResponse(200, {"id": uid(14), "version": 1, "plan": {"schemaVersion": 1}, "tasks": [task], "map": {"nodes": [task]}})
+        if (method, target) == ("POST", f"/project-runs/{uid(14)}/tasks/task-1/start"):
+            return HttpResponse(201, {"id": uid(14), "version": 2, "currentTaskId": "task-1"})
+        if (method, target) == ("POST", f"/project-runs/{uid(14)}/tasks/task-1/ai-help"):
+            return HttpResponse(200, {
+                "guidance": "Start with the cited requirement.",
+                "provenance": {
+                    "provider": "fake",
+                    "model": "fake-v1",
+                    "promptVersion": "focus-task-help-v1",
+                    "inputHash": "a" * 64,
+                    "generatedAt": "2026-09-05T00:00:00Z",
+                },
+            })
         if method == "GET" and target.startswith("/workflow-operations/"):
             return HttpResponse(200, self.operations[target.rsplit("/", 1)[1]])
         if (method, target) == ("POST", "/uploads"):
@@ -258,7 +274,7 @@ class ProofHttp:
                     "verificationLevel": "MACHINE_VERIFIED",
                     "provider": "fixture",
                     "repositoryId": "9000001",
-                    "pullNumber": 17,
+                    "pullNumber": 42,
                     "headSha": self.HEAD_SHA,
                     "observedAt": "2026-09-03T00:00:00.000Z",
                     "evaluations": self._evaluations(),
@@ -407,10 +423,11 @@ class LocalAcceptanceTests(unittest.TestCase):
             receipts = list((infra / ".evidence").glob("*.json"))
             self.assertEqual(len(receipts), 1)
             receipt = json.loads(receipts[0].read_text())
-            self.assertEqual(receipt["receiptVersion"], 2)
+            self.assertEqual(receipt["receiptVersion"], 3)
             self.assertEqual(receipt["mode"], "ci-real-source")
             self.assertTrue(receipt["claims"]["realJobSource"])
-            self.assertTrue(receipt["claims"]["fakeAi"])
+            self.assertTrue(receipt["claims"]["fixtureApiAi"])
+            self.assertTrue(receipt["claims"]["fakeAiRuntime"])
             self.assertFalse(receipt["claims"]["liveDeepSeek"])
             self.assertEqual(receipt["contractHashes"]["apiOpenApiSha256"], hashlib.sha256(b'{"openapi":"3.1.0"}\n').hexdigest())
             self.assertEqual(os.stat(receipts[0]).st_mode & 0o777, 0o600)
@@ -447,7 +464,27 @@ class LocalAcceptanceTests(unittest.TestCase):
             receipt = json.loads(receipt_path.read_text())
             self.assertTrue(receipt["claims"]["realJobSource"])
             self.assertTrue(receipt["claims"]["liveDeepSeek"])
-            self.assertFalse(receipt["claims"]["fakeAi"])
+            self.assertFalse(receipt["claims"]["fixtureApiAi"])
+            self.assertFalse(receipt["claims"]["fakeAiRuntime"])
+
+    def test_receipt_distinguishes_api_ai_from_runtime_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            infra, api, _, env = contract_tree(Path(directory), "local")
+            env["AI_V1_PROVIDER"] = "fake"
+            env["AI_DISABLE_EXTERNAL"] = "true"
+            env["AI_DISABLE_LLM"] = "true"
+            acceptance = ReceiptAcceptance(
+                FakeHttp(), FakeCommands(), env,
+                {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+                ["docker", "compose"], api, repo_root=infra,
+            )
+            receipt_path = acceptance.write_receipt()
+            receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(receipt["providerEvidence"]["apiAi"], "deepseek")
+            self.assertEqual(receipt["providerEvidence"]["aiRuntime"], "fake")
+            self.assertFalse(receipt["claims"]["fixtureApiAi"])
+            self.assertTrue(receipt["claims"]["fakeAiRuntime"])
+            self.assertFalse(receipt["claims"]["liveDeepSeek"])
 
     def test_full_fixture_path_and_upload_use_only_backend_resources(self) -> None:
         http = FakeHttp()
@@ -465,6 +502,163 @@ class LocalAcceptanceTests(unittest.TestCase):
         self.assertEqual(proposal_call[2], {"careerDiffSnapshotId": uid(9), "constraints": {"availableHours": 20, "preferredStack": ["typescript"], "allowedRepositoryModes": ["EXISTING_OWNED"]}})
         self.assertIn(("DELETE", f"/uploads/{uid(15)}", None), http.calls)
         self.assertTrue(acceptance.resource_ids.isdisjoint(acceptance.client_ids))
+    def test_fixture_path_invokes_connected_focus_help_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "src").mkdir()
+            (source / "src/focus.ts").write_text("focus-task-help", encoding="utf-8")
+            (source / "jagalchi_ai").mkdir()
+            (source / "jagalchi_ai/focus.py").write_text("focusTaskHelp", encoding="utf-8")
+            http = FakeHttp()
+            env = environment(source)
+            env["AI_SOURCE_DIR"] = str(source)
+            acceptance = LocalAcceptance(
+                http,
+                FakeCommands(),
+                env,
+                {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+                ["docker", "compose", "-p", "jagalchi-v1-local"],
+                source,
+            )
+
+            acceptance.run_fixture_path()
+
+            self.assertIn(
+                ("POST", f"/project-runs/{uid(14)}/tasks/task-1/start", {}),
+                http.calls,
+            )
+            self.assertIn(
+                (
+                    "POST",
+                    f"/project-runs/{uid(14)}/tasks/task-1/ai-help",
+                    {
+                        "question": (
+                            "What is the next evidence-backed step? "
+                            f"{acceptance.synthetic_canary}"
+                        )
+                    },
+                ),
+                http.calls,
+            )
+            self.assertEqual(
+                acceptance.fixture_documents["projectRun"]["focusTaskHelpReceipt"]["provider"],
+                "fake",
+            )
+
+    def test_synthetic_canary_scan_records_only_safe_metadata(self) -> None:
+        acceptance = LocalAcceptance(
+            FakeHttp(),
+            FakeCommands(outputs=["api ready\nworker ready\nai ready"]),
+            environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"],
+            ROOT,
+            profile="phase2",
+        )
+        acceptance.run_synthetic_canary_non_disclosure()
+        self.assertEqual(
+            acceptance.synthetic_canary_evidence,
+            {
+                "scheme": "per-run-synthetic-canary",
+                "scannedSurfaces": ["aiRouteReceipts", "fixtureDocuments", "serviceLogs"],
+                "matches": 0,
+            },
+        )
+
+    def test_synthetic_canary_scan_fails_without_echoing_the_value(self) -> None:
+        acceptance = LocalAcceptance(
+            FakeHttp(),
+            FakeCommands(),
+            environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"],
+            ROOT,
+            profile="phase2",
+        )
+        acceptance.commands = FakeCommands(
+            outputs=[f"unsafe log {acceptance.synthetic_canary}"]
+        )
+        with self.assertRaisesRegex(
+            AcceptanceError,
+            "synthetic canary disclosure detected",
+        ) as captured:
+            acceptance.run_synthetic_canary_non_disclosure()
+        self.assertNotIn(acceptance.synthetic_canary, str(captured.exception))
+
+    def test_phase2_receipt_fails_closed_without_canary_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            infra, api, _, env = contract_tree(Path(directory), "ci")
+            acceptance = ReceiptAcceptance(
+                FakeHttp(),
+                FakeCommands(),
+                env,
+                {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+                ["docker", "compose"],
+                api,
+                repo_root=infra,
+                profile="phase2",
+            )
+            with self.assertRaisesRegex(
+                AcceptanceError,
+                "requires synthetic canary evidence",
+            ):
+                acceptance.write_receipt()
+
+    def test_phase2_accepts_explicit_deterministic_runtime_override(self) -> None:
+        env = environment(ROOT, "local-real-source")
+        env["REAL_JOB_SOURCE_URL"] = "https://jobs.example.test/role"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AI_V1_PROVIDER": "fake",
+                "AI_DISABLE_EXTERNAL": "true",
+                "AI_DISABLE_LLM": "true",
+            },
+        ):
+            env = effective_environment(env)
+        acceptance = LocalAcceptance(
+            FakeHttp(),
+            FakeCommands(),
+            env,
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"],
+            ROOT,
+            profile="phase2",
+        )
+
+        acceptance.validate_environment()
+
+    def test_ai_http_receipt_collection_requires_every_v1_route(self) -> None:
+        logs = "\n".join(
+            f'"POST {path} HTTP/1.1" 200 42' for path in AI_ROUTE_PATHS.values()
+        )
+        acceptance = LocalAcceptance(
+            FakeHttp(),
+            FakeCommands(outputs=[logs]),
+            environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"],
+            ROOT,
+        )
+        observed = acceptance.collect_ai_http_receipts(AI_ROUTE_PATHS)
+        self.assertEqual(set(observed), set(AI_ROUTE_PATHS))
+        self.assertTrue(all(item["httpStatus"] == 200 for item in observed.values()))
+
+        missing_logs = "\n".join(
+            f'"POST {path} HTTP/1.1" 200 42'
+            for route, path in AI_ROUTE_PATHS.items()
+            if route != "plan"
+        )
+        acceptance = LocalAcceptance(
+            FakeHttp(),
+            FakeCommands(outputs=[missing_logs]),
+            environment(ROOT),
+            {"schemaVersion": 1, "userId": uid(1), "projectRunId": uid(2), "roadmapId": uid(3)},
+            ["docker", "compose", "-p", "jagalchi-v1-local"],
+            ROOT,
+        )
+        with self.assertRaisesRegex(RuntimeError, "only HTTP 200"):
+            acceptance.collect_ai_http_receipts(AI_ROUTE_PATHS)
 
     def test_worker_recovery_uses_sigkill_safe_timings_and_restores_worker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -570,8 +764,13 @@ class LocalAcceptanceTests(unittest.TestCase):
     def test_phase2_run_order_places_browser_gate_before_proof(self) -> None:
         source = (ROOT / "deploy/local_acceptance.py").read_text(encoding="utf-8")
         browser_index = source.index("self.run_no_msw_browser()")
+        rollback_index = source.index("self.run_rollback_browser()")
+        project_runs_rollback_index = source.index("self.run_project_runs_rollback_browser()")
         proof_index = source.index("self.run_task_verification_proof()")
         self.assertLess(browser_index, proof_index)
+        self.assertLess(browser_index, rollback_index)
+        self.assertLess(rollback_index, project_runs_rollback_index)
+        self.assertLess(project_runs_rollback_index, proof_index)
 
     def test_run_no_msw_browser_restarts_api_before_playwright(self) -> None:
         events: list[str] = []
@@ -579,7 +778,7 @@ class LocalAcceptanceTests(unittest.TestCase):
 
         def fake_build_plan(**_kwargs):
             events.append("build_plan")
-            return object()
+            return types.SimpleNamespace(playwright_env={})
 
         def fake_run_integrated(_plan, _env, *, between_spec_runs=None):
             events.append("run_integrated")

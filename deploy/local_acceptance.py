@@ -31,6 +31,21 @@ API_BASE_URL = "http://127.0.0.1:8080/api"
 SEED_TASK_KEY = "seed-task-1"
 SEED_EVIDENCE_RULES = ["PR", "CHANGED_PATH:src/core.ts", "NAMED_CHECK:ci/test"]
 EXPECTED_PROOF_EVALUATION_TYPES = frozenset({"MERGED_PR", "CHANGED_PATH", "NAMED_CHECK"})
+AI_ROUTE_PATHS = {
+    "extract": "/ai/internal/v1/job-posting-extract",
+    "interpret": "/ai/internal/v1/candidate-evidence-interpret",
+    "proposals": "/ai/internal/v1/project-proposals",
+    "plan": "/ai/internal/v1/project-plan",
+}
+FOCUS_TASK_HELP_ROUTE = "/internal/v1/focus-task-help"
+ACCEPTANCE_ENV_OVERRIDE_KEYS = (
+    "AI_V1_PROVIDER",
+    "AI_DISABLE_EXTERNAL",
+    "AI_DISABLE_LLM",
+)
+AI_ACCESS_LOG_RE = re.compile(
+    r'"POST\s+(?P<path>/(?:ai/)?internal/v1/[^ ]+)\s+HTTP/\d(?:\.\d)?"\s+(?P<status>\d{3})\b'
+)
 
 
 class AcceptanceError(RuntimeError):
@@ -189,6 +204,7 @@ class LocalAcceptance:
         self.monotonic = monotonic
         self.sleep = sleep
         self.namespace = uuid.uuid4().hex[:12]
+        self.synthetic_canary = f"JAGALCHI_P2_CANARY_{self.namespace}"
         self.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self.client_ids: set[str] = set()
         self.resource_ids: set[str] = set()
@@ -197,19 +213,35 @@ class LocalAcceptance:
         self.reverified_snapshot_id: str | None = None
         self.publication_state: str | None = None
         self.browser_platform_revision: str | None = None
+        self.browser_profile: str | None = None
+        self.rollback_platform_revision: str | None = None
+        self.project_runs_rollback_platform_revision: str | None = None
+        self.ai_route_receipts: list[dict[str, Any]] = []
+        self.fixture_resource_ids: dict[str, str] = {}
+        self.fixture_documents: dict[str, Any] = {}
         self.profile = profile
 
     def run(self) -> None:
         self.validate_environment()
+        if self.profile == "phase2":
+            self.rebuild_current_source_stack()
         self.login_and_verify_seed()
         self.wait_for_post_seed_workflow_readiness()
+        if self.profile == "phase2":
+            self.assert_real_stack_ready()
         self.run_fixture_path()
+        if self.profile == "phase2":
+            self.run_ai_route_receipt_gate()
         self.run_upload_lifecycle()
         self.run_worker_recovery()
         if self.profile == "phase2":
             self.run_no_msw_browser()
+            self.run_rollback_browser()
+            self.run_project_runs_rollback_browser()
         self.run_task_verification_proof()
         self.run_restart_retention()
+        if self.profile == "phase2":
+            self.run_synthetic_canary_non_disclosure()
         self.write_receipt()
         print(
             f"local acceptance: OK mode={self.env['JAGALCHI_LOCAL_MODE']} "
@@ -235,7 +267,11 @@ class LocalAcceptance:
             "JOB_SOURCE_PROVIDER", "GITHUB_PROVIDER", "AI_PROVIDER", "AI_V1_PROVIDER",
             "AI_DISABLE_EXTERNAL", "AI_DISABLE_LLM",
         ))
-        if expected is None or actual != expected:
+        deterministic = expected[:3] + ("fake", "true", "true") if expected else None
+        if expected is None or (
+            actual != expected
+            and not (self.profile == "phase2" and actual == deterministic)
+        ):
             raise AcceptanceError("local acceptance requires a locked Phase 1 provider mode")
         if mode in {"ci-real-source", "local-real-source"} and not self.env.get("REAL_JOB_SOURCE_URL"):
             raise AcceptanceError("REAL_JOB_SOURCE_URL is required for real-source acceptance")
@@ -245,6 +281,52 @@ class LocalAcceptance:
             raise AcceptanceError("seed schemaVersion must be 1")
         if self.repo_root is not None:
             self.contract_hashes()
+    def rebuild_current_source_stack(self) -> None:
+        self.commands.run(
+            [
+                *self.compose,
+                "up",
+                "--build",
+                "-d",
+                "--wait",
+                "api",
+                "workflow-worker",
+                "ai",
+            ]
+        )
+        self.source_stack_built = True
+
+    def assert_real_stack_ready(self) -> None:
+        result = self.commands.run(
+            [*self.compose, "ps", "--all", "--format", "json"],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise AcceptanceError("local Compose service status is unavailable")
+        raw = (result.stdout or "").strip()
+        try:
+            decoded = json.loads(raw) if raw.startswith("[") else [
+                json.loads(line) for line in raw.splitlines() if line.strip()
+            ]
+        except json.JSONDecodeError as error:
+            raise AcceptanceError("local Compose service status is malformed") from error
+        rows = decoded if isinstance(decoded, list) else [decoded]
+        by_service = {
+            item.get("Service") or item.get("service"): item
+            for item in rows
+            if isinstance(item, dict)
+        }
+        required = ("api", "workflow-worker", "api-db", "ai-db", "ai", "minio")
+        for service in required:
+            row = by_service.get(service)
+            state = str((row or {}).get("State") or (row or {}).get("state")).lower()
+            health = str((row or {}).get("Health") or (row or {}).get("health")).lower()
+            if state != "running" or health != "healthy":
+                raise AcceptanceError(
+                    f"local Compose service is not healthy: {service} state={state or 'missing'} "
+                    f"health={health or 'missing'}"
+                )
+
 
     def run_no_msw_browser(self) -> None:
         if self.repo_root is None:
@@ -261,17 +343,62 @@ class LocalAcceptance:
                 repo_root=self.repo_root,
                 env_file=env_file,
                 seed=self.seed,
-                profile=self.profile,
+                profile="full-web",
             )
-            def reset_login_rate_limit() -> None:
-                self.commands.run([*self.compose, "restart", "api"])
-                self.wait_for_health_ready(timeout_seconds=90)
-
-            between_spec_runs = reset_login_rate_limit if self.profile == "phase2" else None
+            plan.playwright_env["JAGALCHI_E2E_SYNTHETIC_CANARY"] = self.synthetic_canary
+            self.browser_profile = "full-web"
             self.browser_platform_revision = run_integrated(
                 plan,
                 read_env(env_file),
-                between_spec_runs=between_spec_runs,
+                between_spec_runs=None,
+            )
+        except BrowserGateError as error:
+            raise AcceptanceError(str(error)) from error
+
+    def run_rollback_browser(self) -> None:
+        if self.repo_root is None:
+            raise AcceptanceError("rollback browser gate requires the infra repository root")
+        from local_browser_gate import BrowserGateError, build_plan, read_env, run_integrated
+
+        env_file = Path(os.environ.get("JAGALCHI_ACCEPTANCE_ENV_FILE", ""))
+        if not env_file.is_file():
+            raise AcceptanceError("rollback browser gate requires JAGALCHI_ACCEPTANCE_ENV_FILE")
+        try:
+            plan = build_plan(
+                repo_root=self.repo_root,
+                env_file=env_file,
+                seed=self.seed,
+                profile="rollback",
+            )
+            self.rollback_platform_revision = run_integrated(
+                plan,
+                read_env(env_file),
+                between_spec_runs=None,
+            )
+        except BrowserGateError as error:
+            raise AcceptanceError(str(error)) from error
+
+    def run_project_runs_rollback_browser(self) -> None:
+        if self.repo_root is None:
+            raise AcceptanceError("project-runs rollback browser gate requires the infra repository root")
+        from local_browser_gate import BrowserGateError, build_plan, read_env, run_integrated
+
+        env_file = Path(os.environ.get("JAGALCHI_ACCEPTANCE_ENV_FILE", ""))
+        if not env_file.is_file():
+            raise AcceptanceError(
+                "project-runs rollback browser gate requires JAGALCHI_ACCEPTANCE_ENV_FILE"
+            )
+        try:
+            plan = build_plan(
+                repo_root=self.repo_root,
+                env_file=env_file,
+                seed=self.seed,
+                profile="project-runs-rollback",
+            )
+            self.project_runs_rollback_platform_revision = run_integrated(
+                plan,
+                read_env(env_file),
+                between_spec_runs=None,
             )
         except BrowserGateError as error:
             raise AcceptanceError(str(error)) from error
@@ -300,6 +427,11 @@ class LocalAcceptance:
     def write_receipt(self) -> Path:
         if self.repo_root is None:
             raise AcceptanceError("acceptance receipt requires the infra repository root")
+        if self.profile == "phase2" and not isinstance(
+            getattr(self, "synthetic_canary_evidence", None),
+            dict,
+        ):
+            raise AcceptanceError("phase2 receipt requires synthetic canary evidence")
         completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         mode = self.env["JAGALCHI_LOCAL_MODE"]
         matrix = {
@@ -328,10 +460,20 @@ class LocalAcceptance:
             "worker-expired-lease-recovery",
         ]
         if self.profile == "phase2":
-            passed_gates.append("no-msw-browser")
+            passed_gates.extend(
+                [
+                    "current-source-stack-build",
+                    "ai-route-receipts",
+                    "no-msw-browser",
+                    "no-msw-browser-full-journey",
+                    "rollback-flags-off",
+                    "project-runs-only-rollback",
+                    "synthetic-canary-non-disclosure",
+                ]
+            )
         passed_gates.extend(["task-verification-proof", "restart-retention"])
         receipt: dict[str, Any] = {
-            "receiptVersion": 2,
+            "receiptVersion": 3,
             "mode": mode,
             "profile": self.profile,
             "startedAt": self.started_at,
@@ -342,7 +484,8 @@ class LocalAcceptance:
                 "realJobSource": matrix["jobSource"] == "live",
                 "fixtureGithub": matrix["github"] == "fixture",
                 "liveDeepSeek": live_deepseek,
-                "fakeAi": matrix["apiAi"] == "fixture" and matrix["aiRuntime"] == "fake",
+                "fixtureApiAi": matrix["apiAi"] == "fixture",
+                "fakeAiRuntime": matrix["aiRuntime"] == "fake",
             },
             "contractHashes": self.contract_hashes(),
             "passedGates": passed_gates,
@@ -350,9 +493,22 @@ class LocalAcceptance:
             "proofSnapshotId": self.proof_snapshot_id,
             "reverifiedSnapshotId": self.reverified_snapshot_id,
             "publicationState": self.publication_state,
+            "sourceStackBuilt": getattr(self, "source_stack_built", False),
         }
-        if self.browser_platform_revision is not None:
-            receipt["browserPlatformRevision"] = self.browser_platform_revision
+        if self.profile == "phase2":
+            receipt["aiRouteReceipts"] = getattr(self, "ai_route_receipts", [])
+            receipt["fixtureResourceIds"] = getattr(self, "fixture_resource_ids", {})
+            receipt["browserGate"] = {
+                "profile": getattr(self, "browser_profile", None),
+                "platformRevision": getattr(self, "browser_platform_revision", None),
+                "rollbackPlatformRevision": getattr(self, "rollback_platform_revision", None),
+                "projectRunsRollbackPlatformRevision": getattr(
+                    self, "project_runs_rollback_platform_revision", None
+                ),
+            }
+            receipt["nonDisclosure"] = getattr(self, "synthetic_canary_evidence", None)
+        if self.synthetic_canary in json.dumps(receipt, sort_keys=True):
+            raise AcceptanceError("synthetic canary leaked into acceptance receipt")
         evidence_dir = self.repo_root / ".evidence"
         evidence_dir.mkdir(mode=0o700, exist_ok=True)
         os.chmod(evidence_dir, 0o700)
@@ -475,6 +631,8 @@ class LocalAcceptance:
             "PROJECT_RUN",
         )
         project_run = self.http.request("GET", f"/project-runs/{project_run_id}").body
+        if object_path(project_run, "id") != project_run_id:
+            raise AcceptanceError("Project Run response id is not backend-generated identity")
         if object_path(project_run, "plan", "schemaVersion") != 1:
             raise AcceptanceError("Project Run plan schemaVersion is invalid")
         tasks = object_path(project_run, "tasks")
@@ -482,8 +640,227 @@ class LocalAcceptance:
         if not isinstance(tasks, list) or not tasks or not isinstance(nodes, list):
             raise AcceptanceError("Project Run plan is empty")
         task_ids = {object_path(task, "id") for task in tasks}
-        if task_ids != {object_path(node, "id") for node in nodes}:
+        node_ids = {object_path(node, "id") for node in nodes}
+        if task_ids != node_ids:
             raise AcceptanceError("Project Run task and map projections differ")
+        if not all(isinstance(task_id, str) and task_id for task_id in task_ids):
+            raise AcceptanceError("Project Run task identity is missing")
+        if "focus-task-help" in self.ai_routes():
+            task_id = object_path(tasks[0], "id")
+            version = object_path(project_run, "version")
+            if not isinstance(task_id, str) or not task_id or not isinstance(version, int):
+                raise AcceptanceError("Focus task help fixture requires task identity and version")
+            started = self.http.request(
+                "POST",
+                f"/project-runs/{project_run_id}/tasks/{task_id}/start",
+                body={},
+                headers=self.version_headers(version),
+                expected=(201,),
+            ).body
+            if object_path(started, "currentTaskId") != task_id:
+                raise AcceptanceError("Focus task help fixture did not activate its task")
+            help_response = self.http.request(
+                "POST",
+                f"/project-runs/{project_run_id}/tasks/{task_id}/ai-help",
+                body={
+                    "question": (
+                        "What is the next evidence-backed step? "
+                        f"{self.synthetic_canary}"
+                    )
+                },
+                expected=(200,),
+            ).body
+            project_run["focusTaskHelpReceipt"] = object_path(help_response, "provenance")
+        self.fixture_resource_ids = {
+            "targetVersionId": target_version_id,
+            "careerTargetId": target_id,
+            "profileSnapshotId": profile_id,
+            "diffSnapshotId": diff_id,
+            "proposalSetId": proposal_set_id,
+            "projectRunId": project_run_id,
+        }
+        self.fixture_documents = {
+            "target": target,
+            "profile": profile_draft,
+            "proposalSet": proposal_set,
+            "projectRun": project_run,
+        }
+    def _source_contains(self, roots: list[Path], tokens: tuple[str, ...]) -> bool:
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_file() or "node_modules" in path.parts:
+                    continue
+                if path.suffix not in {".ts", ".tsx", ".py"}:
+                    continue
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                if all(token in source for token in tokens):
+                    return True
+        return False
+
+    def ai_routes(self) -> dict[str, str]:
+        routes = dict(AI_ROUTE_PATHS)
+        ai_source = Path(self.env.get("AI_SOURCE_DIR", ""))
+        api_tokens = ("focus-task-help", "focusTaskHelp")
+        focus_connected = any(
+            self._source_contains([self.api_source / "src"], (token,))
+            for token in api_tokens
+        ) and any(
+            self._source_contains([ai_source / "jagalchi_ai"], (token,))
+            for token in api_tokens
+        )
+        if focus_connected:
+            routes["focus-task-help"] = FOCUS_TASK_HELP_ROUTE
+        return routes
+
+    def _ai_receipt_for_route(self, route: str) -> dict[str, Any]:
+        if route == "extract":
+            return object_path(
+                self.fixture_documents["target"],
+                "payload",
+                "extraction",
+                "receipt",
+            )
+        if route == "interpret":
+            return object_path(
+                self.fixture_documents["profile"],
+                "payload",
+                "interpretation",
+                "receipt",
+            )
+        if route == "proposals":
+            return object_path(self.fixture_documents["proposalSet"], "payload", "receipt")
+        if route == "plan":
+            return object_path(
+                self.fixture_documents["projectRun"],
+                "plan",
+                "provenance",
+                "compileReceipt",
+            )
+        if route == "focus-task-help":
+            for path in (
+                ("projectRun", "plan", "provenance", "focusTaskHelpReceipt"),
+                ("projectRun", "focusTaskHelpReceipt"),
+            ):
+                try:
+                    return object_path(self.fixture_documents, *path)
+                except AcceptanceError:
+                    continue
+        raise AcceptanceError(f"AI receipt is not connected for route {route}")
+
+    def collect_ai_http_receipts(self, routes: dict[str, str]) -> dict[str, dict[str, Any]]:
+        result = self.commands.run(
+            [*self.compose, "logs", "--no-color", "--since", self.started_at, "ai"],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise AcceptanceError("Django AI access log is unavailable")
+        logs = f"{result.stdout or ''}\n{result.stderr or ''}"
+        observed: dict[str, dict[str, Any]] = {}
+        for route, path in routes.items():
+            statuses = [
+                int(match.group("status"))
+                for match in AI_ACCESS_LOG_RE.finditer(logs)
+                if match.group("path") == path
+            ]
+            if not statuses or any(status != 200 for status in statuses):
+                raise AcceptanceError(
+                    f"AI route did not produce only HTTP 200 responses: {path}"
+                )
+            observed[route] = {"httpStatus": 200, "requestCount": len(statuses)}
+        return observed
+
+    def run_synthetic_canary_non_disclosure(self) -> None:
+        result = self.commands.run(
+            [
+                *self.compose,
+                "logs",
+                "--no-color",
+                "--since",
+                self.started_at,
+                "api",
+                "workflow-worker",
+                "ai",
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise AcceptanceError("synthetic canary log scan could not read service logs")
+        surfaces = {
+            "serviceLogs": f"{result.stdout or ''}\n{result.stderr or ''}",
+            "fixtureDocuments": json.dumps(self.fixture_documents, sort_keys=True),
+            "aiRouteReceipts": json.dumps(self.ai_route_receipts, sort_keys=True),
+        }
+        if any(self.synthetic_canary in content for content in surfaces.values()):
+            raise AcceptanceError(
+                "synthetic canary disclosure detected on protected evidence surfaces"
+            )
+        self.synthetic_canary_evidence = {
+            "scheme": "per-run-synthetic-canary",
+            "scannedSurfaces": sorted(surfaces),
+            "matches": 0,
+        }
+
+    def run_ai_route_receipt_gate(self) -> None:
+        routes = self.ai_routes()
+        http_receipts = self.collect_ai_http_receipts(routes)
+        source_ids = {
+            "extract": self.fixture_resource_ids.get("targetVersionId"),
+            "interpret": self.fixture_resource_ids.get("profileSnapshotId"),
+            "proposals": self.fixture_resource_ids.get("proposalSetId"),
+            "plan": self.fixture_resource_ids.get("projectRunId"),
+            "focus-task-help": self.fixture_resource_ids.get("projectRunId"),
+        }
+        receipts: list[dict[str, Any]] = []
+        for route, path in routes.items():
+            receipt = self._ai_receipt_for_route(route)
+            provider = receipt.get("provider")
+            model = receipt.get("model")
+            prompt_version = receipt.get("promptVersion")
+            input_hash = receipt.get("inputHash")
+            generated_at = receipt.get("generatedAt")
+            if not isinstance(provider, str) or not provider:
+                raise AcceptanceError(f"AI {route} receipt provider is missing")
+            if not isinstance(model, str) or not model:
+                raise AcceptanceError(f"AI {route} receipt model is missing")
+            if not isinstance(prompt_version, str) or not prompt_version:
+                raise AcceptanceError(f"AI {route} receipt promptVersion is missing")
+            if not is_sha256(input_hash):
+                raise AcceptanceError(f"AI {route} receipt inputHash is malformed")
+            if not isinstance(generated_at, str) or not generated_at:
+                raise AcceptanceError(f"AI {route} receipt generatedAt is missing")
+            expected_provider = self.env.get("AI_V1_PROVIDER")
+            if provider != expected_provider:
+                raise AcceptanceError(f"AI {route} receipt provider differs from environment")
+            if provider == "deepseek":
+                model_key = (
+                    "DEEPSEEK_EXTRACTION_MODEL"
+                    if route == "extract"
+                    else "DEEPSEEK_PLANNING_MODEL"
+                )
+                expected_model = self.env.get(model_key)
+                if not expected_model or model != expected_model:
+                    raise AcceptanceError(f"AI {route} receipt model differs from lock")
+            evidence = {
+                "route": route,
+                "path": path,
+                "resourceId": source_ids.get(route),
+                "provider": provider,
+                "model": model,
+                "promptVersion": prompt_version,
+                "inputHash": input_hash,
+                "generatedAt": generated_at,
+                **http_receipts[route],
+            }
+            if isinstance(receipt.get("providerRequestId"), str):
+                evidence["providerRequestId"] = receipt["providerRequestId"]
+            receipts.append(evidence)
+        self.ai_route_receipts = receipts
+
 
     def run_upload_lifecycle(self) -> None:
         content = f"jagalchi-local-acceptance:{self.namespace}".encode()
@@ -742,7 +1119,6 @@ class LocalAcceptance:
             expected=(202,),
         ).body
         operation_id = require_uuid(object_path(import_response, "id"), "restart retention operation")
-        resource_ids_before = set(self.resource_ids)
         try:
             self.wait_for_state(operation_id, "RUNNING", 15)
         except AcceptanceError:
@@ -752,9 +1128,9 @@ class LocalAcceptance:
         self.commands.run([*self.compose, "up", "-d", "--no-deps", "api"])
         self.wait_for_health_ready()
         operation = self.poll_operation(operation_id, timeout_seconds=120)
+        if object_path(operation, "result", "resourceType") != "CAREER_TARGET_VERSION":
+            raise AcceptanceError("mid-poll restart returned the wrong resource type")
         resource_id = require_uuid(object_path(operation, "result", "resourceId"), "import resource")
-        if resource_id in resource_ids_before:
-            raise AcceptanceError("mid-poll restart produced a duplicate resource id")
         self.record_resource(resource_id, "restart retention import")
 
         preserved_publication = self.publication_state
@@ -844,6 +1220,14 @@ def object_path(value: Any, *keys: str) -> Any:
     return current
 
 
+def effective_environment(file_environment: dict[str, str]) -> dict[str, str]:
+    environment = dict(file_environment)
+    for key in ACCEPTANCE_ENV_OVERRIDE_KEYS:
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    return environment
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", required=True, type=Path)
@@ -855,7 +1239,7 @@ def main() -> None:
     if args.profile not in {"phase1", "phase2"}:
         raise AcceptanceError(f"unsupported acceptance profile: {args.profile}")
     os.environ["JAGALCHI_ACCEPTANCE_ENV_FILE"] = str(args.env)
-    env = read_env(args.env)
+    env = effective_environment(read_env(args.env))
     seed = json.loads(args.seed_receipt)
     lock = json.loads((args.repo_root / "deploy/local-stack.lock.json").read_text())
     project = lock.get("project")

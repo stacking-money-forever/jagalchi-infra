@@ -16,6 +16,7 @@ from deploy.local_browser_gate import (
     redact_output,
     run_full_web_e2e,
     run_integrated,
+    run_rollback_smoke,
     run_standalone,
 )
 
@@ -48,13 +49,37 @@ class BrowserGateTests(unittest.TestCase):
             "apps/web/e2e-v1-local/phase-one-entry.spec.ts",
             "apps/web/e2e-v1-local/phase-two-map-focus-proof.spec.ts",
             "apps/web/e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+            "apps/web/e2e-v1-local/phase-two-closure.spec.ts",
+            "apps/web/e2e-v1-local/phase-two-rollback.spec.ts",
             "apps/web/playwright.v1-local.config.ts",
             "scripts/test-v1-local-e2e.sh",
         ]
+        manifest = json.loads(
+            (ROOT / "deploy/e2e-v1-local.manifest.json").read_text(encoding="utf-8")
+        )
+        closure_markers = manifest["phase2ClosureSpec"]["requiredMarkers"]
+        rollback_markers = manifest["rollbackSpec"]["requiredMarkers"]
         for relative in required:
             target = platform / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(relative + "\n", encoding="utf-8")
+            if relative.endswith("playwright.v1-local.config.ts"):
+                content = (
+                    "serviceWorkers: 'block'\n"
+                    "NEXT_PUBLIC_API_MOCKING NEXT_PUBLIC_E2E_MOCKING\n"
+                    "NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED: "
+                    "process.env.NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED\n"
+                    "NEXT_PUBLIC_PROJECT_RUNS_ENABLED: "
+                    "process.env.NEXT_PUBLIC_PROJECT_RUNS_ENABLED\n"
+                )
+            elif relative.endswith("helpers.ts"):
+                content = "expectNoServiceWorker navigator.serviceWorker\n"
+            elif relative.endswith("phase-two-closure.spec.ts"):
+                content = "\n".join(closure_markers) + "\n"
+            elif relative.endswith("phase-two-rollback.spec.ts"):
+                content = "\n".join(rollback_markers) + "\n"
+            else:
+                content = relative + "\n"
+            target.write_text(content, encoding="utf-8")
         (platform / "scripts/test-v1-local-e2e.sh").chmod(0o755)
         (infra / "deploy/e2e-v1-local.manifest.json").write_text(
             (ROOT / "deploy/e2e-v1-local.manifest.json").read_text(encoding="utf-8"),
@@ -127,6 +152,7 @@ class BrowserGateTests(unittest.TestCase):
                 [
                     "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
                     "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+                    "e2e-v1-local/phase-two-closure.spec.ts",
                 ],
             )
             for argument in spec_paths:
@@ -300,7 +326,14 @@ class BrowserGateTests(unittest.TestCase):
         wave_b = "e2e-v1-local/phase-two-wave-b-entry.spec.ts"
         self.assertIn(map_focus, manifest["requiredFiles"])
         self.assertIn(wave_b, manifest["requiredFiles"])
-        self.assertEqual(manifest["phase2RequiredSpecs"], [map_focus, wave_b])
+        closure = "e2e-v1-local/phase-two-closure.spec.ts"
+        self.assertEqual(manifest["phase2RequiredSpecs"], [map_focus, wave_b, closure])
+        self.assertEqual(manifest["phase2ClosureSpec"]["path"], closure)
+        self.assertTrue(manifest["phase2ClosureSpec"]["requiredMarkers"])
+        rollback = "e2e-v1-local/phase-two-rollback.spec.ts"
+        self.assertIn(rollback, manifest["requiredFiles"])
+        self.assertEqual(manifest["rollbackSpec"]["path"], rollback)
+        self.assertTrue(manifest["rollbackSpec"]["requiredMarkers"])
         for spec in manifest["phase2RequiredSpecs"]:
             self.assertTrue(spec.startswith("e2e-v1-local/"), spec)
             self.assertFalse(spec.startswith("apps/web/"), spec)
@@ -322,6 +355,22 @@ class BrowserGateTests(unittest.TestCase):
             env_file = self._env_file(root, platform)
             with self.assertRaisesRegex(BrowserGateError, "phase2RequiredSpecs browser spec is missing"):
                 build_plan(repo_root=root / "infra", env_file=env_file, seed=seed(), allow_dev_head=True)
+    def test_phase2_closure_requires_all_declared_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            closure = platform / "apps/web/e2e-v1-local/phase-two-closure.spec.ts"
+            closure.write_text("phase2-closure:loading\n", encoding="utf-8")
+            env_file = self._env_file(root, platform)
+            with self.assertRaisesRegex(BrowserGateError, "missing required markers"):
+                build_plan(
+                    repo_root=root / "infra",
+                    env_file=env_file,
+                    seed=seed(),
+                    allow_dev_head=True,
+                    profile="phase2",
+                )
+
 
     def test_missing_required_wave_b_file_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -408,6 +457,28 @@ class BrowserGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(BrowserGateError, "playwright failed"):
                     run_integrated(plan, env)
 
+    def test_run_integrated_rejects_synthetic_canary_in_runner_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+            )
+            plan.playwright_env["JAGALCHI_E2E_SYNTHETIC_CANARY"] = "safe-test-canary"
+
+            def fake_run(command, *, env, cwd=None):
+                if command[0] == "pnpm" and "build" in command:
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0, "safe-test-canary", "")
+
+            with mock.patch("deploy.local_browser_gate.run_command", side_effect=fake_run):
+                with self.assertRaisesRegex(BrowserGateError, "synthetic canary leaked"):
+                    run_integrated(plan, {})
+
     def test_run_standalone_propagates_nonzero_harness(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -423,7 +494,6 @@ class BrowserGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(BrowserGateError, "harness failed"):
                     run_standalone(plan, env)
 
-
     def test_integrated_playwright_commands_split_phase2_specs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -437,9 +507,10 @@ class BrowserGateTests(unittest.TestCase):
                 profile="phase2",
             )
             commands = integrated_playwright_commands(plan, between_spec_runs=lambda: None)
-            self.assertEqual(len(commands), 2)
+            self.assertEqual(len(commands), 3)
             self.assertIn("phase-two-map-focus-proof.spec.ts", commands[0][-1])
             self.assertIn("phase-two-wave-b-entry.spec.ts", commands[1][-1])
+            self.assertIn("phase-two-closure.spec.ts", commands[2][-1])
 
     def test_run_integrated_phase2_invokes_between_spec_runs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -464,7 +535,7 @@ class BrowserGateTests(unittest.TestCase):
                     {},
                     between_spec_runs=lambda: between_calls.append("reset"),
                 )
-            self.assertEqual(between_calls, ["reset"])
+            self.assertEqual(between_calls, ["reset", "reset"])
 
     def test_run_integrated_success_returns_revision(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -487,6 +558,7 @@ class BrowserGateTests(unittest.TestCase):
             "e2e-v1-local/phase-one-entry.spec.ts",
             "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
             "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+            "e2e-v1-local/phase-two-closure.spec.ts",
         ]
         self.assertEqual(manifest["v1LocalRequiredSpecs"], expected)
 
@@ -513,6 +585,7 @@ class BrowserGateTests(unittest.TestCase):
                     "e2e-v1-local/phase-one-entry.spec.ts",
                     "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
                     "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+                    "e2e-v1-local/phase-two-closure.spec.ts",
                 ],
             )
 
@@ -530,7 +603,7 @@ class BrowserGateTests(unittest.TestCase):
             )
             commands = integrated_playwright_commands(plan, between_spec_runs=lambda: None)
             self.assertEqual(len(commands), 1)
-            self.assertEqual(len([part for part in commands[0] if part.endswith(".spec.ts")]), 3)
+            self.assertEqual(len([part for part in commands[0] if part.endswith(".spec.ts")]), 4)
 
     def test_browser_gate_env_full_web_includes_project_runs(self) -> None:
         env = browser_gate_env(
@@ -542,6 +615,82 @@ class BrowserGateTests(unittest.TestCase):
             profile="full-web",
         )
         self.assertEqual(env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "true")
+    def test_browser_gate_env_rollback_disables_project_runs(self) -> None:
+        env = browser_gate_env(
+            {
+                "LOCAL_SEED_EMAIL": "local@example.test",
+                "LOCAL_SEED_PASSWORD": "super-secret-password",
+            },
+            seed(),
+            profile="rollback",
+        )
+        self.assertEqual(env["NEXT_PUBLIC_API_MOCKING"], "false")
+        self.assertEqual(env["NEXT_PUBLIC_E2E_MOCKING"], "false")
+        self.assertEqual(env["NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED"], "false")
+        self.assertEqual(env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "false")
+        self.assertEqual(env["CI"], "true")
+
+    def test_browser_gate_env_project_runs_rollback_preserves_evidence(self) -> None:
+        env = browser_gate_env(
+            {
+                "LOCAL_SEED_EMAIL": "local@example.test",
+                "LOCAL_SEED_PASSWORD": "super-secret-password",
+            },
+            seed(),
+            profile="project-runs-rollback",
+        )
+        self.assertEqual(env["NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED"], "true")
+        self.assertEqual(env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "false")
+        self.assertEqual(env["NEXT_PUBLIC_API_MOCKING"], "false")
+        self.assertEqual(env["NEXT_PUBLIC_E2E_MOCKING"], "false")
+
+    def test_build_plan_rollback_selects_dedicated_spec_without_grep(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="rollback",
+            )
+            self.assertIsNone(plan.playwright_grep)
+            self.assertEqual(plan.playwright_env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "false")
+            self.assertNotIn("--grep", plan.integrated_playwright_command)
+            self.assertEqual(
+                [
+                    argument
+                    for argument in plan.integrated_playwright_command
+                    if argument.endswith(".spec.ts")
+                ],
+                ["e2e-v1-local/phase-two-rollback.spec.ts"],
+            )
+
+    def test_build_plan_project_runs_rollback_selects_dedicated_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            platform, _ = self._platform_tree(root)
+            env_file = self._env_file(root, platform)
+            plan = build_plan(
+                repo_root=root / "infra",
+                env_file=env_file,
+                seed=seed(),
+                allow_dev_head=True,
+                profile="project-runs-rollback",
+            )
+            self.assertEqual(plan.playwright_env["NEXT_PUBLIC_EVIDENCE_EXECUTION_ENABLED"], "true")
+            self.assertEqual(plan.playwright_env["NEXT_PUBLIC_PROJECT_RUNS_ENABLED"], "false")
+            self.assertEqual(
+                [
+                    argument
+                    for argument in plan.integrated_playwright_command
+                    if argument.endswith(".spec.ts")
+                ],
+                ["e2e-v1-local/phase-two-rollback.spec.ts"],
+            )
+
 
     def test_unsupported_profile_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

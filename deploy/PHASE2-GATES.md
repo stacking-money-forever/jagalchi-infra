@@ -198,7 +198,8 @@ Checklist items "Restarting API during polling" and "Restarting the full backend
 3. infra implements G10 + G13 (pure `local_acceptance.py`, testable against `ci` mode without
    DeepSeek) and the G11 runner + manifest check in the same change set; unit tests in
    `deploy/tests/test_local_acceptance.py` follow the existing fake-transport pattern.
-4. Receipt version bumps to 2 (`receiptVersion: 2`, adds the fields above) — consumers are
-   only humans/CI, no compat shim needed.
+4. Receipt version 3 records API-side and Django-runtime AI modes independently as
+   `fixtureApiAi` and `fakeAiRuntime`; `providerEvidence` remains the detailed source of truth.
+   Consumers are only humans/CI, so no compatibility shim is needed.
 5. Gate code commits land after step 1; this document is the Phase 2 runner design SSOT.
    Push remains forbidden until orchestrator authorizes.

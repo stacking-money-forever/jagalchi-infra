@@ -6,16 +6,47 @@
     "apps/web/e2e-v1-local/phase-one-entry.spec.ts",
     "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
     "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+    "e2e-v1-local/phase-two-rollback.spec.ts",
     "apps/web/playwright.v1-local.config.ts",
     "scripts/test-v1-local-e2e.sh"
   ],
   "phase2RequiredSpecs": [
     "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
-    "e2e-v1-local/phase-two-wave-b-entry.spec.ts"
+    "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+    "e2e-v1-local/phase-two-closure.spec.ts"
   ],
   "v1LocalRequiredSpecs": [
     "e2e-v1-local/phase-one-entry.spec.ts",
     "e2e-v1-local/phase-two-map-focus-proof.spec.ts",
-    "e2e-v1-local/phase-two-wave-b-entry.spec.ts"
-  ]
+    "e2e-v1-local/phase-two-wave-b-entry.spec.ts",
+    "e2e-v1-local/phase-two-closure.spec.ts"
+  ],
+  "phase2ClosureSpec": {
+    "path": "e2e-v1-local/phase-two-closure.spec.ts",
+    "requiredMarkers": [
+      "phase2-closure:loading",
+      "phase2-closure:empty",
+      "phase2-closure:blocked",
+      "phase2-closure:error",
+      "phase2-closure:stale-version",
+      "phase2-closure:invalidated-proof",
+      "phase2-closure:narrow-390",
+      "phase2-closure:graph-structure-immutability",
+      "phase2-closure:backend-generated-run-task-id",
+      "phase2-closure:new-run-first-task-open",
+      "phase2-closure:deterministic-transition",
+      "phase2-closure:refresh-resume",
+      "phase2-closure:rediscover-run-without-browser-state",
+      "phase2-closure:verification-failure-visible-and-recoverable",
+      "phase2-closure:unpublish-owner-control",
+      "phase2-closure:light-dark-evidence",
+      "phase2-closure:no-service-worker"
+    ]
+  },
+  "rollbackSpec": {
+    "path": "e2e-v1-local/phase-two-rollback.spec.ts",
+    "requiredMarkers": [
+      "phase2-rollback:flags-off"
+    ]
+  }
 }
