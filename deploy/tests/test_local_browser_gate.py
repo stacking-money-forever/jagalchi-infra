@@ -11,6 +11,7 @@ from deploy.local_browser_gate import (
     BrowserGateError,
     browser_gate_env,
     build_plan,
+    failure_excerpt,
     integrated_playwright_commands,
     prepare_playwright_artifact_dirs,
     redact_output,
@@ -463,6 +464,18 @@ class BrowserGateTests(unittest.TestCase):
         redacted = redact_output(message, env)
         self.assertNotIn("super-secret-password", redacted)
         self.assertIn("[REDACTED]", redacted)
+
+    def test_failure_excerpt_keeps_the_actionable_tail_and_drops_color_noise(self) -> None:
+        excerpt = failure_excerpt(
+            "Expected: 201\nReceived: 200\n"
+            "Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n"
+            "(Use `node --trace-warnings ...` to show where the warning was created)\n",
+            {},
+        )
+        self.assertIn("Expected: 201", excerpt)
+        self.assertIn("Received: 200", excerpt)
+        self.assertNotIn("NO_COLOR", excerpt)
+        self.assertNotIn("trace-warnings", excerpt)
 
     def test_run_integrated_propagates_nonzero_playwright(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

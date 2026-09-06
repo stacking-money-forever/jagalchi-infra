@@ -407,6 +407,18 @@ def redact_output(text: str, env: dict[str, str]) -> str:
     return redacted
 
 
+def failure_excerpt(text: str, env: dict[str, str], *, limit: int = 4_000) -> str:
+    redacted = redact_output(text, env)
+    noise = (
+        "Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.",
+        "Use `node --trace-warnings ...` to show where the warning was created",
+    )
+    useful = "\n".join(
+        line for line in redacted.splitlines() if not any(fragment in line for fragment in noise)
+    ).strip()
+    return (useful or redacted.strip())[-limit:]
+
+
 def build_plan(
     *,
     repo_root: Path,
@@ -519,8 +531,8 @@ def run_integrated(
     if synthetic_canary and synthetic_canary in f"{build.stdout or ''}\n{build.stderr or ''}":
         raise BrowserGateError("synthetic canary leaked into browser build output")
     if build.returncode != 0:
-        detail = redact_output((build.stdout or "") + (build.stderr or ""), env)
-        raise BrowserGateError(f"browser gate web build failed: {detail[-500:]}")
+        detail = failure_excerpt((build.stdout or "") + (build.stderr or ""), env)
+        raise BrowserGateError(f"browser gate web build failed: {detail}")
     for index, command in enumerate(
         integrated_playwright_commands(plan, between_spec_runs=between_spec_runs)
     ):
@@ -534,16 +546,16 @@ def run_integrated(
         if synthetic_canary and synthetic_canary in f"{playwright.stdout or ''}\n{playwright.stderr or ''}":
             raise BrowserGateError("synthetic canary leaked into browser runner output")
         if playwright.returncode != 0:
-            detail = redact_output((playwright.stdout or "") + (playwright.stderr or ""), env)
-            raise BrowserGateError(f"browser gate playwright failed: {detail[-500:]}")
+            detail = failure_excerpt((playwright.stdout or "") + (playwright.stderr or ""), env)
+            raise BrowserGateError(f"browser gate playwright failed: {detail}")
     return plan.platform_revision
 
 
 def run_standalone(plan: BrowserGatePlan, env: dict[str, str]) -> str:
     completed = run_command(plan.standalone_command, env=plan.playwright_env)
     if completed.returncode != 0:
-        detail = redact_output((completed.stdout or "") + (completed.stderr or ""), env)
-        raise BrowserGateError(f"browser gate harness failed: {detail[-500:]}")
+        detail = failure_excerpt((completed.stdout or "") + (completed.stderr or ""), env)
+        raise BrowserGateError(f"browser gate harness failed: {detail}")
     return plan.platform_revision
 
 
