@@ -359,12 +359,18 @@ def browser_gate_env(
     password = env.get("LOCAL_SEED_PASSWORD", "")
     if not email or not password:
         raise BrowserGateError("LOCAL_SEED_EMAIL and LOCAL_SEED_PASSWORD are required")
+    web_port = env.get("E2E_WEB_PORT", "3100")
+    if not web_port.isdigit() or not 1024 <= int(web_port) <= 65535:
+        raise BrowserGateError("E2E_WEB_PORT must be an integer between 1024 and 65535")
+    base_url = f"http://127.0.0.1:{web_port}"
     playwright_env = {
         "E2E_TEST_EMAIL": email,
         "E2E_TEST_PASSWORD": password,
         "E2E_SEED_USER_ID": user_id,
         "E2E_SEED_PROJECT_RUN_ID": project_run_id,
         "E2E_SEED_ROADMAP_ID": roadmap_id,
+        "E2E_WEB_PORT": web_port,
+        "E2E_BASE_URL": base_url,
         "JAGALCHI_E2E_SEED_RUN_ID": project_run_id,
         "API_ORIGIN": "http://127.0.0.1:8080",
         "NEXT_PUBLIC_API_URL": "/api",
@@ -378,7 +384,7 @@ def browser_gate_env(
         if profile == ROLLBACK_PROFILE
         else "true",
         "NEXT_PUBLIC_PROOF_PROFILE_ENABLED": "true",
-        "NEXT_PUBLIC_SITE_URL": "http://127.0.0.1:3100",
+        "NEXT_PUBLIC_SITE_URL": base_url,
         # Force a new production build and prevent Playwright web-server reuse.
         "CI": "true",
     }

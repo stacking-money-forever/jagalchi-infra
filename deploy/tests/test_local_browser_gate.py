@@ -194,6 +194,30 @@ class BrowserGateTests(unittest.TestCase):
         self.assertEqual(env["NEXT_PUBLIC_API_URL"], "/api")
         self.assertEqual(env["API_ORIGIN"], "http://127.0.0.1:8080")
 
+    def test_browser_gate_env_uses_an_isolated_configured_web_port(self) -> None:
+        env = browser_gate_env(
+            {
+                "LOCAL_SEED_EMAIL": "local@example.test",
+                "LOCAL_SEED_PASSWORD": "super-secret-password",
+                "E2E_WEB_PORT": "3110",
+            },
+            seed(),
+        )
+        self.assertEqual(env["E2E_WEB_PORT"], "3110")
+        self.assertEqual(env["E2E_BASE_URL"], "http://127.0.0.1:3110")
+        self.assertEqual(env["NEXT_PUBLIC_SITE_URL"], "http://127.0.0.1:3110")
+
+    def test_browser_gate_env_rejects_an_invalid_web_port(self) -> None:
+        with self.assertRaisesRegex(BrowserGateError, "E2E_WEB_PORT"):
+            browser_gate_env(
+                {
+                    "LOCAL_SEED_EMAIL": "local@example.test",
+                    "LOCAL_SEED_PASSWORD": "super-secret-password",
+                    "E2E_WEB_PORT": "not-a-port",
+                },
+                seed(),
+            )
+
     def test_browser_gate_env_phase2_includes_project_runs_build_flags(self) -> None:
         env = browser_gate_env(
             {
