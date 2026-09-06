@@ -37,7 +37,8 @@ clone_if_missing() {
   fi
   mkdir -p "$(dirname "$destination")"
   git clone --filter=blob:none "$repository_url" "$destination"
-  local expected="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['revisions'][sys.argv[2]])" "$lock_file" "$source_key")"
+  local expected
+  expected="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['revisions'][sys.argv[2]])" "$lock_file" "$source_key")"
   git -C "$destination" checkout --detach "$expected"
   git -C "$destination" submodule update --init --recursive 2>/dev/null || true
 }
