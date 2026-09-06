@@ -38,6 +38,7 @@
       "phase2-closure:refresh-resume",
       "phase2-closure:rediscover-run-without-browser-state",
       "phase2-closure:verification-failure-visible-and-recoverable",
+      "phase2-closure:verification-retry-same-binding-done-proof",
       "phase2-closure:unpublish-owner-control",
       "phase2-closure:light-dark-evidence",
       "phase2-closure:no-service-worker"

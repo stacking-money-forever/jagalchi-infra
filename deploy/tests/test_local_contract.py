@@ -28,9 +28,12 @@ class LocalStackContractTest(unittest.TestCase):
         env_example = (ROOT / "deploy/local.env.example").read_text(encoding="utf-8")
 
         self.assertIn("E2E_COMPLETION_IP_LIMIT: ${E2E_COMPLETION_IP_LIMIT:-100}", local_compose)
+        self.assertIn("E2E_COMPLETION_ACCOUNT_LIMIT: ${E2E_COMPLETION_ACCOUNT_LIMIT:-100}", local_compose)
         self.assertGreaterEqual(local_compose.count("environment: *api-env"), 2)
         self.assertIn("E2E_COMPLETION_IP_LIMIT=100", env_example)
+        self.assertIn("E2E_COMPLETION_ACCOUNT_LIMIT=100", env_example)
         self.assertNotIn("E2E_COMPLETION_IP_LIMIT", production_compose)
+        self.assertNotIn("E2E_COMPLETION_ACCOUNT_LIMIT", production_compose)
 
     def test_local_scripts_are_executable_and_parse(self) -> None:
         scripts = sorted((ROOT / "deploy").glob("local-*.sh"))
