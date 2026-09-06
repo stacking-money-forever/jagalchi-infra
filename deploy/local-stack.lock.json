@@ -4,7 +4,7 @@
  "nodeMajor": 24,
  "pnpm": "10.33.2",
  "python": "3.11",
- "apiContractSha256": "1795500141cc96b14dba7324d00995c83c6fcb98efaa0e72eb84912b346664a2",
+ "apiContractSha256": "0f531485f7417b3f12b184d3344b4ee6c352f85c8828e0df0733dd127af6568f",
  "composeFile": "compose.local.yml",
  "canonicalSources": {
   "platform": {
@@ -91,9 +91,9 @@
   "jagalchi-platform/services/ai"
  ],
  "revisions": {
-  "platform": "4e1b95d94bcae38cc9bb15cbfa9603e8e957519c",
-  "api": "2235b52cea7504fe20ae948dc605b6260a5c16f2",
-  "ai": "c0cb8c45835955ec6d2cc59515e1972b58adee78",
-  "infra": "353dcdf42e725541f6042fef77163c71b88e0822"
+  "platform": "4c4a95da708ca2e3128c929bf683bcc5f083b7e6",
+  "api": "c314d50727d581483a503e249c0cf293d40c8d03",
+  "ai": "b70aaf54121c37d635adaeeb3f6259ff8d3eae66",
+  "infra": "c2a05db1e189527e23bfb4497c5e0623c0be8f6c"
  }
 }
