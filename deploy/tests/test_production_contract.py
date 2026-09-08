@@ -135,7 +135,7 @@ class ProductionContractTest(unittest.TestCase):
         self.assertIn('command: ["gunicorn", "--config", "gunicorn.conf.py"', compose)
         self.assertGreaterEqual(compose.count('DEPLOYMENT_ENV: "production"'), 2)
         self.assertIn('PROJECT_RUNS_ENABLED: "${PROJECT_RUNS_ENABLED:-false}"', compose)
-        self.assertEqual(compose.count('AI_V1_PROMPT_VERSION: "2026-09-03.3"'), 2)
+        self.assertEqual(compose.count('AI_V1_PROMPT_VERSION: "2026-09-04.2"'), 2)
         self.assertGreaterEqual(compose.count("DEEPSEEK_EXTRACTION_MODEL"), 2)
         self.assertGreaterEqual(compose.count("DEEPSEEK_PLANNING_MODEL"), 2)
         self.assertGreaterEqual(compose.count("OBJECT_STORAGE_PRESIGN_ENDPOINT"), 2)
